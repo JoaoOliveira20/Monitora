@@ -1,5 +1,5 @@
 import type { Target } from "../config/schema.js";
-import type { AlertEvent, MonitorState, StateTransition } from "../types/index.js";
+import type { AlertEvent, CheckResult, LogCheckMetadata, MonitorState, StateTransition } from "../types/index.js";
 
 export function formatDuration(durationMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
@@ -57,12 +57,43 @@ function buildRecoveredEvent(target: Target, transition: StateTransition, now: D
   };
 }
 
+function buildLogMatchEvent(target: Target, metadata: LogCheckMetadata, now: Date): AlertEvent {
+  const patternSuffix = metadata.matchedPattern ? ` (pattern "${metadata.matchedPattern}")` : "";
+  const lineSuffix = metadata.matchedLine ? `: ${metadata.matchedLine}` : "";
+
+  return {
+    type: "LOG_MATCH",
+    targetId: target.id,
+    targetName: target.name,
+    occurredAt: now,
+    message: `${target.name} matched ${metadata.matchCount} new log line(s)${patternSuffix}${lineSuffix}`,
+    metadata,
+  };
+}
+
+function evaluateLogAlert(target: Target, state: MonitorState, result: CheckResult<LogCheckMetadata>, now: Date): AlertEvent | undefined {
+  if (result.success) {
+    return undefined;
+  }
+
+  if (!isCooldownElapsed(state.lastAlertAt, target.cooldownSeconds, now)) {
+    return undefined;
+  }
+
+  return buildLogMatchEvent(target, result.metadata, now);
+}
+
 export function evaluateAlert(
   target: Target,
   state: MonitorState,
   transition: StateTransition | undefined,
+  result: CheckResult,
   now: Date
 ): AlertEvent | undefined {
+  if (target.type === "log") {
+    return evaluateLogAlert(target, state, result as CheckResult<LogCheckMetadata>, now);
+  }
+
   if (transition?.newStatus === "DOWN") {
     return buildDownEvent(target, state, now);
   }

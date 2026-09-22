@@ -2,11 +2,11 @@
 
 ## Current Status
 
-O núcleo completo do fluxo documentado está implementado, testado e **ligado** — `src/index.ts` carrega a config, roda o Scheduler de verdade, alimenta o State Store, avalia alertas e envia notificações reais ao Discord. Validado rodando de ponta a ponta dentro do Docker contra um servidor HTTP real (não só testes unitários). O projeto agora tem um `README.md` que reflete esse estado real (instalação, configuração de `.env`/`config/targets.json`, limitações). Repositório no GitHub (`origin/main`). Log/Host Monitor e Discord Bot (`/status`) ainda não existem.
+O núcleo completo do fluxo documentado está implementado, testado e ligado, e agora **o Log Monitor também está implementado**. `src/index.ts` carrega a config, roda o Scheduler de verdade (com dispatch para HTTP ou Log conforme `target.type`), alimenta o State Store, avalia alertas (incluindo o novo tipo `LOG_MATCH`) e envia notificações reais ao Discord. Validado rodando de ponta a ponta dentro do Docker, inclusive com um arquivo de log montado via volume read-only (o cenário real documentado na arquitetura) — essa validação encontrou e corrigiu um problema real de *design* (ver "Recent Changes"), não só de implementação. `README.md` reflete esse estado. Repositório no GitHub (`origin/main`). Só o Host Monitor e o Discord Bot (`/status`) ainda não existem.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. `README.md` foi criado, cobrindo o que é o projeto, como instalar/rodar, e a configuração de `.env`/`config/targets.json`.
+Nenhuma tarefa em execução no momento. O Log Monitor foi implementado, e a Alert Policy/Discord Notifier foram ajustados para suportar o tipo de evento `LOG_MATCH` corretamente.
 
 ## Completed
 
@@ -56,11 +56,25 @@ Nenhuma tarefa em execução no momento. `README.md` foi criado, cobrindo o que 
   - **Achado crítico de segurança durante a investigação** (script `tsx` descartável contra o domínio real do Discord, com um webhook inventado que obviamente não existe — só para inspecionar a *forma* do erro, sem usar nenhuma credencial real): o erro `DiscordAPIError` lançado pelo `discord.js` tem um campo `.url` que expõe **a URL completa do webhook, token incluído**, em texto puro. Logar o erro ingenuamente (`console.error(error)` ou até `error.message` em alguns casos) vazaria o token. `describeDeliveryFailure()` extrai só `.status`/`.code` (seguros) e nunca toca em `.url` ou no objeto de erro bruto. Testado explicitamente (`sendAlertToDiscord reports a Discord API failure without leaking the webhook URL`) com regex negativo confirmando que o token fake de 68 caracteres não aparece na mensagem de erro retornada.
   - Testes usam `node:test`'s `mock.method(WebhookClient.prototype, "send", ...)` — mock nativo, sem dependência extra — em vez de um Discord real (regra explícita do CLAUDE.md). Precisei descobrir empiricamente o formato exigido pela validação de URL do `discord.js` (`id` com 17-19 dígitos, `token` com exatamente 68 caracteres `[\w-]`, lido do código-fonte instalado em `node_modules/discord.js/src/util/Util.js`) para conseguir construir uma URL de webhook fake que passasse pela validação e chegasse até o mock.
   - 9 testes (`tests/discord-notifier.test.ts`): envio bem-sucedido, `discordWebhookEnv` ausente (falha sem tentar enviar), falha da API do Discord sem vazar a URL, fallback genérico para erro não reconhecido, `client.destroy()` sempre chamado (inclusive em erro), conteúdo do embed DOWN (com e sem `lastError`), conteúdo do embed RECOVERED (com e sem `downtimeMs`).
-- **`src/index.ts` ligado ao núcleo completo.** `src/monitoring/dispatch.ts` (`checkTarget`) decide qual monitor rodar por `target.type` — só `http` implementado; `log`/`host` lançam erro claro (`"log/host monitor is not implemented yet"`), capturado pelo `onCheckError` do Scheduler sem derrubar o processo. 3 testes novos (`tests/dispatch.test.ts`).
+- **`src/index.ts` ligado ao núcleo completo.** `src/monitoring/dispatch.ts` (`checkTarget`, hoje `createDispatcher()`, ver abaixo) decide qual monitor rodar por `target.type`. `host` lança erro claro (`"host monitor is not implemented yet"`), capturado pelo `onCheckError` do Scheduler sem derrubar o processo. 3 testes (`tests/dispatch.test.ts`).
   - `index.ts`: carrega a config (`loadConfigOrExit`, sai com código 1 e mensagem clara em erro crítico de configuração), cria o `StateStore`, cria o `Scheduler` com o dispatcher, liga `onResult` → `stateStore.recordCheckResult` → `evaluateAlert` → (se houver evento) `sendAlertToDiscord`, e trata `SIGTERM`/`SIGINT` parando o Scheduler antes de sair (`process.exit(0)`).
   - `main()` só roda quando o arquivo é o entrypoint real do processo (guard via `import.meta.url` comparado a `pathToFileURL(process.argv[1])`), não quando importado por um teste — ver bug encontrado abaixo.
   - `resolveMonitorName` continua exportado e com seus 3 testes originais intactos.
 - **`README.md`** criado na raiz do projeto: o que é o Monitora, status atual (o que funciona vs o que falta — Log/Host Monitor e Discord Bot), requisitos, quick start (`git clone` → `.env` → `config/targets.json` → `docker compose up`), tabela de configuração de `.env` (deixando claro que `DISCORD_WEBHOOK_MAIN` é só um exemplo de nome, e que `DISCORD_TOKEN`/`DISCORD_CLIENT_ID`/`DISCORD_GUILD_ID` são reservadas e não usadas ainda), tabela de campos de `config/targets.json` (comuns + específicos de `http`), scripts disponíveis, segurança, estrutura do projeto, limitações conhecidas do MVP. Cada comando documentado (`docker compose build/up/down`, `docker compose run --rm monitor <script>`) foi validado rodando de verdade antes de ser escrito, não só copiado de memória.
+- **Log Monitor** (`src/monitoring/log-monitor.ts`, classe `LogMonitor`). Diferente do HTTP Monitor (stateless), o Log Monitor precisa manter estado *entre* chamadas (offset de leitura, inode do arquivo) — a interface `TargetChecker = (target) => Promise<CheckResult>` do Scheduler não previa isso. Resolvido com o mesmo padrão do `StateStore`: uma classe com `Map<targetId, LogReadState>` interno. `dispatch.ts` virou `createDispatcher()`, uma factory que instancia o `LogMonitor` uma vez e devolve a função `TargetChecker` — `index.ts` e os testes foram ajustados de acordo.
+  - Lê o arquivo incrementalmente (`fs.open` + `read` a partir do offset salvo, nunca o arquivo inteiro), corta a leitura no último byte `0x0a` (`\n`) completo — nunca em nível de caractere, então nunca corta um caractere UTF-8 multi-byte no meio, mesmo que o boundary de leitura caia lá; uma linha sem `\n` final é deixada para o próximo ciclo.
+  - Detecta rotação/recriação comparando `stats.ino` entre checks; detecta truncamento quando `stats.size < offset salvo`; em ambos os casos, reseta o offset para 0 e processa o conteúdo do arquivo "novo" normalmente (diferente da primeira leitura, ver abaixo). Confirmado empiricamente (script `tsx` descartável) que `stats.ino` muda ao recriar um arquivo mesmo neste ambiente Windows, então os testes locais são confiáveis mesmo sem rodar em Linux.
+  - **Na primeira vez que um target é visto** (sem estado salvo), o Log Monitor não processa o conteúdo já existente — só registra a posição atual e passa a processar dali em diante (comportamento `tail -f`, não `cat`). Decisão deliberada: sem isso, ligar o monitor pela primeira vez num log com histórico geraria alertas retroativos de erros antigos/já resolvidos.
+  - Arquivo ausente ou sem permissão de leitura retorna `CheckResult` de falha com mensagem categorizada (`"log file not found"`, `"permission denied reading log file"`), nunca lança exceção — consistente com o padrão do HTTP Monitor. O `path` nunca aparece na mensagem de erro (mesma cautela de segurança já aplicada em outros monitores).
+  - Linha correspondente truncada a 500 caracteres antes de virar `metadata.matchedLine` — ver risco de segurança documentado abaixo e no README.
+  - 11 testes (`tests/log-monitor.test.ts`): comportamento tail-f na primeira leitura, detecção de match em linha nova, sem match não reporta nada, múltiplos matches num único ciclo, linha parcial (sem `\n`) não processada até completar, nunca relê linha já processada, truncamento, rotação/recriação, arquivo inexistente, arquivo que aparece depois de ausente, isolamento entre targets.
+- **Achado de design real durante a validação de integração via Docker** (não um bug de implementação — a lógica do Log Monitor em si estava correta desde a primeira tentativa, 11/11 testes passando de cara): reaproveitar a máquina de estados `UNKNOWN → UP → DOWN` do State Store (pensada para HTTP, onde "sucesso" = "serviço no ar continuamente") não se encaixa na semântica de um log, onde "sem match neste ciclo" é o normal na maioria dos ciclos — mesmo logo depois de notificar um erro. Resultado: toda linha de erro isolada gerava um ciclo `DOWN` → `RECOVERED` no ciclo seguinte (já que não há mais match a partir do momento em que a linha foi processada), duplicando notificações para o mesmo evento. Confirmado ao vivo dentro do Docker com um arquivo montado via volume `:ro`. A própria arquitetura já previa a solução: `AlertEvent` sempre teve `LOG_MATCH` como um tipo de evento à parte de `DOWN`/`RECOVERED` (`docs/ARCHITECTURE.md`, seção 18) — só não tinha sido implementado ainda porque o Log Monitor não existia. Corrigido:
+  1. Novo tipo `LOG_MATCH` em `AlertEvent` (`src/types/index.ts`), com `LogCheckMetadata` movido de `log-monitor.ts` para lá (tipo compartilhado entre o monitor e a Alert Policy, análogo a `CheckResult`).
+  2. `evaluateAlert` ganhou um parâmetro `result: CheckResult` e ramifica por `target.type === "log"` logo no início: um match gera `LOG_MATCH` imediatamente (respeitando `cooldownSeconds` entre matches, para não floodar em caso de várias linhas de erro em sequência), e a transição `DOWN`/`RECOVERED` do State Store é **completamente ignorada** para esse tipo — nunca gera `DOWN` nem `RECOVERED` para um log target, mesmo que o State Store reporte uma transição internamente (`consecutiveFailures`/`status` do `MonitorState` continuam sendo atualizados normalmente, só não alimentam mais mensagens de alerta HTTP-shaped).
+  3. Consequência aceita e documentada (README): `failureThreshold`/`recoveryThreshold` são efetivamente ignorados para targets `log` — um match sempre notifica na primeira ocorrência (não faz sentido "confirmar" um erro de log com múltiplas ocorrências consecutivas do mesmo jeito que faz sentido para uma falha de rede).
+  4. Discord Notifier ganhou `buildLogMatchEmbed` (🟠 "Log Pattern Matched", campos Service/Matches/Detected at/Pattern/Line).
+  - Retestado ao vivo no mesmo cenário Docker que revelou o bug: uma linha ERROR agora gera exatamente 1 tentativa de notificação em 12s (6 ciclos de check), não mais o flapping `DOWN`→`RECOVERED`. Uma segunda linha de erro pouco depois foi corretamente suprimida pelo cooldown (900s configurado, ~17s decorridos) — confirma que o cooldown entre matches distintos também funciona.
+  - Testes atualizados/adicionados: `evaluateAlert` ganhou 4 testes novos para o caminho `log` (`tests/alert-policy.test.ts`, agora 20 testes no arquivo), `sendAlertToDiscord` ganhou 2 testes para o embed `LOG_MATCH` (`tests/discord-notifier.test.ts`, agora 11), `dispatch.test.ts` teve seu teste de log atualizado para confirmar o dispatch real (antes testava só o erro "not implemented").
 
 ## In Progress
 
@@ -68,7 +82,7 @@ Nenhuma tarefa em execução no momento. `README.md` foi criado, cobrindo o que 
 
 ## Next Steps
 
-- Implementar o Log Monitor e/ou o Host Monitor (hoje `checkTarget` lança erro claro para esses tipos — nenhum target `log`/`host` pode ser usado ainda de verdade).
+- Implementar o Host Monitor (hoje `checkTarget` lança erro claro para `type: "host"` — nenhum target desse tipo pode ser usado de verdade ainda). Ao implementar, decidir também como o `HOST_THRESHOLD` alert event (mencionado em `docs/ARCHITECTURE.md` seção 18, ainda não implementado) deve funcionar — provavelmente análogo ao `LOG_MATCH` (evento pontual, não a máquina de estados DOWN/RECOVERED), já que "threshold excedido" tem a mesma natureza de evento discreto que "linha de log bateu um padrão".
 - Depois, considerar o Discord Bot (`/status`, lê o `StateStore` sem rodar healthchecks) — não é prioridade imediata, mencionado aqui só para não esquecer que faz parte do roadmap documentado.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
@@ -117,6 +131,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
   1. **O processo morria sozinho segundos após iniciar quando `config.targets` está vazio** (exatamente o estado atual de `config/targets.json`). Sem nenhum target habilitado, o `Scheduler` não cria nenhum timer, e nada mais mantém o event loop do Node vivo — os listeners de `SIGTERM`/`SIGINT` sozinhos não seguram o processo. O container saía com exit code 0 silenciosamente, sem nunca esperar um sinal de verdade. Corrigido com um `setInterval` "heartbeat" (`keepProcessAlive`, ~24.8 dias, nunca dispara de verdade) que mantém o processo vivo até `shutdown()` limpar o timer.
   2. **Cooldown completamente ignorado durante uma falha persistente de entrega ao Discord.** A decisão registrada na etapa da Alert Policy era marcar `lastAlertAt` só após confirmação de sucesso do envio — mas isso significa que, se o envio *sempre* falhar (webhook inválido, Discord fora do ar por um período longo), `lastAlertAt` nunca é setado, e a Alert Policy trata cada novo check como "nunca alertei ainda", tentando reenviar a **cada ciclo de check** (a cada `intervalSeconds`, não a cada `cooldownSeconds`) — na prática, sem cooldown nenhum. Confirmado ao vivo: 5 tentativas em ~15s com um webhook fake. Corrigido revertendo a decisão: `recordAlertSent` agora é chamado assim que o alerta é **decidido**, não quando é **entregue com sucesso**. Retestado no mesmo cenário: exatamente 1 tentativa em 15s (o esperado, já que `cooldownSeconds` era 900).
 - Criado `README.md`. Cada comando documentado nele foi validado rodando de verdade (`docker compose build/up/down`, `docker compose run --rm monitor npm run typecheck`, `docker compose run --rm monitor npm test`), não só descrito de memória. Aproveitado para remover uma entrada desatualizada em "Next Steps" (mencionava "montar o cabo em `src/index.ts`... hoje nada disso está conectado ainda", que já tinha sido concluído numa etapa anterior e não tinha sido removida).
+- Implementado o Log Monitor (`src/monitoring/log-monitor.ts`, 11 testes) e `createDispatcher()` (antes `checkTarget` livre) para acomodar seu estado interno. Validação de integração real via Docker com um arquivo de log montado via volume `:ro` (o cenário documentado na arquitetura) revelou um problema real de design — reaproveitar a máquina de estados DOWN/RECOVERED do HTTP para logs gerava um ciclo de flapping DOWN→RECOVERED a cada linha de erro isolada. Corrigido implementando o tipo de evento `LOG_MATCH` que a arquitetura já prevía mas nunca tinha sido implementado: `evaluateAlert` agora ramifica por `target.type`, ignorando completamente a transição DOWN/RECOVERED do State Store para targets `log` (que passam a nunca gerar DOWN/RECOVERED, só LOG_MATCH). Discord Notifier ganhou o embed correspondente. Retestado ao vivo no mesmo cenário: 1 notificação por evento de erro, cooldown respeitado entre matches distintos. README e config/targets.json real restaurados sem alterações permanentes de teste.
 
 ## Validation
 
@@ -133,10 +148,11 @@ npm run build
 # OK — tsc -p tsconfig.build.json gerou dist/index.js.
 
 npm test
-# OK — 79 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
+# OK — 97 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
 # 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts,
-# 15 de src/monitoring/state-store.ts, 11 de src/monitoring/alert-policy.ts, 9 de src/discord/notifier.ts,
-# 3 de src/monitoring/dispatch.ts (mock nativo do node:test onde aplicável, sem Discord real).
+# 15 de src/monitoring/state-store.ts, 20 de src/monitoring/alert-policy.ts, 11 de src/discord/notifier.ts,
+# 3 de src/monitoring/dispatch.ts, 11 de src/monitoring/log-monitor.ts (mock nativo do node:test onde
+# aplicável, sem Discord real, sem rede externa).
 # Suíte completa rodada 3x seguidas para checar flakiness de timing nos testes do Scheduler — estável nas 3.
 # Confirmado que importar src/index.ts (para tests/resolve-monitor-name.test.ts) não dispara mais o
 # bootstrap real (carregar config, iniciar scheduler) — a mensagem de log de startup não vaza mais no
@@ -240,6 +256,33 @@ docker compose run --rm monitor npm run typecheck
 
 docker compose run --rm monitor npm test
 # OK — 79/79 testes passando também via docker compose run (não só localmente).
+
+# --- após implementar o Log Monitor e corrigir o achado de design LOG_MATCH ---
+
+npx tsx <script descartável>
+# OK — confirmado empiricamente que stats.ino muda ao recriar um arquivo neste ambiente Windows,
+# antes de escrever os testes que dependem disso.
+
+npm run typecheck && npm run build && npm test
+# OK — 97/97 testes, incluindo os 11 novos do Log Monitor passando de primeira (11/11 na primeira
+# execução, sem precisar de correções).
+
+docker build --target production -t monitora-production .
+docker run -d --name <teste> -v "<dir-host>:/var/log/monitored:ro" -e SMOKE_TEST_WEBHOOK=<webhook fake> monitora-production
+# Target log real (path: /var/log/monitored/app.log, intervalSeconds: 3, failureThreshold: 1) escrevendo
+# no arquivo do HOST e observando o container:
+#   - ACHADO DE DESIGN (não bug de implementação): 1ª rodada, escrevi uma linha ERROR e vi DUAS
+#     tentativas de "failed to deliver alert" em 5s — o State Store confirmava DOWN no ciclo com match
+#     e RECOVERED no ciclo seguinte (sem mais match, já que o offset já tinha avançado), gerando
+#     flapping a cada linha de erro isolada. Corrigido implementando LOG_MATCH (ver "Recent Changes").
+#   - Retestado do zero após a correção: uma linha ERROR gera exatamente 1 tentativa de notificação em
+#     12s (6 ciclos). Uma segunda linha de erro ~17s depois foi corretamente suprimida pelo cooldown
+#     (900s configurado) — confirma que o cooldown entre matches distintos também funciona.
+# Diretório de log temporário e container de teste removidos ao final; config/targets.json real
+# restaurado sem alterações permanentes.
+
+docker compose build && docker build --target production -t monitora-production .
+# OK — ambas as imagens reconstruídas com src/monitoring/log-monitor.ts novo e o dispatch atualizado.
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.

@@ -26,24 +26,24 @@ function formatTime(date: Date): string {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-function buildEmbed(event: AlertEvent): EmbedBuilder {
-  if (event.type === "DOWN") {
-    const embed = new EmbedBuilder()
-      .setTitle("🔴 Service DOWN")
-      .setColor(Colors.Red)
-      .addFields(
-        { name: "Service", value: event.targetName, inline: true },
-        { name: "Failures", value: String(event.metadata.consecutiveFailures), inline: true },
-        { name: "Detected at", value: formatTime(event.occurredAt), inline: true }
-      );
+function buildDownEmbed(event: Extract<AlertEvent, { type: "DOWN" }>): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setTitle("🔴 Service DOWN")
+    .setColor(Colors.Red)
+    .addFields(
+      { name: "Service", value: event.targetName, inline: true },
+      { name: "Failures", value: String(event.metadata.consecutiveFailures), inline: true },
+      { name: "Detected at", value: formatTime(event.occurredAt), inline: true }
+    );
 
-    if (event.metadata.lastError) {
-      embed.addFields({ name: "Error", value: event.metadata.lastError });
-    }
-
-    return embed;
+  if (event.metadata.lastError) {
+    embed.addFields({ name: "Error", value: event.metadata.lastError });
   }
 
+  return embed;
+}
+
+function buildRecoveredEmbed(event: Extract<AlertEvent, { type: "RECOVERED" }>): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle("🟢 Service RECOVERED")
     .setColor(Colors.Green)
@@ -56,6 +56,38 @@ function buildEmbed(event: AlertEvent): EmbedBuilder {
       },
       { name: "Recovered at", value: formatTime(event.occurredAt), inline: true }
     );
+}
+
+function buildLogMatchEmbed(event: Extract<AlertEvent, { type: "LOG_MATCH" }>): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setTitle("🟠 Log Pattern Matched")
+    .setColor(Colors.Orange)
+    .addFields(
+      { name: "Service", value: event.targetName, inline: true },
+      { name: "Matches", value: String(event.metadata.matchCount), inline: true },
+      { name: "Detected at", value: formatTime(event.occurredAt), inline: true }
+    );
+
+  if (event.metadata.matchedPattern) {
+    embed.addFields({ name: "Pattern", value: event.metadata.matchedPattern, inline: true });
+  }
+
+  if (event.metadata.matchedLine) {
+    embed.addFields({ name: "Line", value: event.metadata.matchedLine });
+  }
+
+  return embed;
+}
+
+function buildEmbed(event: AlertEvent): EmbedBuilder {
+  switch (event.type) {
+    case "DOWN":
+      return buildDownEmbed(event);
+    case "RECOVERED":
+      return buildRecoveredEmbed(event);
+    case "LOG_MATCH":
+      return buildLogMatchEmbed(event);
+  }
 }
 
 function describeDeliveryFailure(error: unknown): string {

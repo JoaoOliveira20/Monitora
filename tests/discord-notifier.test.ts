@@ -51,6 +51,18 @@ function buildRecoveredEvent(overrides: Partial<AlertEvent> = {}): AlertEvent {
   } as AlertEvent;
 }
 
+function buildLogMatchEvent(overrides: Partial<AlertEvent> = {}): AlertEvent {
+  return {
+    type: "LOG_MATCH",
+    targetId: "target-1",
+    targetName: "Application Log",
+    occurredAt: new Date(2026, 0, 1, 14, 21, 12),
+    message: 'Application Log matched 1 new log line(s) (pattern "ERROR"): ERROR disk full',
+    metadata: { matchedPattern: "ERROR", matchedLine: "ERROR disk full", matchCount: 1 },
+    ...overrides,
+  } as AlertEvent;
+}
+
 test("sendAlertToDiscord sends an embed and reports success", async () => {
   process.env.DISCORD_NOTIFIER_TEST_WEBHOOK = FAKE_WEBHOOK_URL;
   const sendMock = mock.method(WebhookClient.prototype, "send", async () => ({}) as never);
@@ -222,6 +234,51 @@ test("sendAlertToDiscord shows unknown downtime on a RECOVERED embed when downti
     const embedData = payload.embeds[0].toJSON() as { fields?: { name: string; value: string }[] };
 
     assert.equal(embedData.fields?.find((field) => field.name === "Downtime")?.value, "unknown");
+  } finally {
+    mock.restoreAll();
+    delete process.env.DISCORD_NOTIFIER_TEST_WEBHOOK;
+  }
+});
+
+test("sendAlertToDiscord builds a LOG_MATCH embed with pattern and matched line", async () => {
+  process.env.DISCORD_NOTIFIER_TEST_WEBHOOK = FAKE_WEBHOOK_URL;
+  const sendMock = mock.method(WebhookClient.prototype, "send", async () => ({}) as never);
+  mock.method(WebhookClient.prototype, "destroy", () => {});
+
+  try {
+    await sendAlertToDiscord(buildTarget(), buildLogMatchEvent());
+
+    const payload = sendMock.mock.calls[0].arguments[0] as { embeds: { toJSON(): Record<string, unknown> }[] };
+    const embedData = payload.embeds[0].toJSON() as {
+      title?: string;
+      fields?: { name: string; value: string }[];
+    };
+
+    assert.equal(embedData.title, "🟠 Log Pattern Matched");
+    assert.equal(embedData.fields?.find((field) => field.name === "Matches")?.value, "1");
+    assert.equal(embedData.fields?.find((field) => field.name === "Pattern")?.value, "ERROR");
+    assert.equal(embedData.fields?.find((field) => field.name === "Line")?.value, "ERROR disk full");
+  } finally {
+    mock.restoreAll();
+    delete process.env.DISCORD_NOTIFIER_TEST_WEBHOOK;
+  }
+});
+
+test("sendAlertToDiscord omits Pattern and Line fields on a LOG_MATCH embed when they are absent", async () => {
+  process.env.DISCORD_NOTIFIER_TEST_WEBHOOK = FAKE_WEBHOOK_URL;
+  const sendMock = mock.method(WebhookClient.prototype, "send", async () => ({}) as never);
+  mock.method(WebhookClient.prototype, "destroy", () => {});
+
+  try {
+    await sendAlertToDiscord(buildTarget(), buildLogMatchEvent({ metadata: { matchCount: 3 } }));
+
+    const payload = sendMock.mock.calls[0].arguments[0] as { embeds: { toJSON(): Record<string, unknown> }[] };
+    const embedData = payload.embeds[0].toJSON() as { fields?: { name: string; value: string }[] };
+
+    assert.deepEqual(
+      embedData.fields?.map((field) => field.name),
+      ["Service", "Matches", "Detected at"]
+    );
   } finally {
     mock.restoreAll();
     delete process.env.DISCORD_NOTIFIER_TEST_WEBHOOK;

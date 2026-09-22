@@ -4,7 +4,7 @@ import { loadTargetsConfig } from "./config/loader.js";
 import type { MonitoraConfig, Target } from "./config/schema.js";
 import { sendAlertToDiscord } from "./discord/notifier.js";
 import { evaluateAlert } from "./monitoring/alert-policy.js";
-import { checkTarget } from "./monitoring/dispatch.js";
+import { createDispatcher } from "./monitoring/dispatch.js";
 import { Scheduler } from "./monitoring/scheduler.js";
 import { StateStore } from "./monitoring/state-store.js";
 import type { AlertEvent, CheckResult } from "./types/index.js";
@@ -50,7 +50,7 @@ function handleCheckResult(stateStore: StateStore, target: Target, result: Check
     return;
   }
 
-  const alertEvent = evaluateAlert(target, state, transition, new Date());
+  const alertEvent = evaluateAlert(target, state, transition, result, new Date());
   if (!alertEvent) {
     return;
   }
@@ -74,6 +74,7 @@ function startMonitoring(config: MonitoraConfig): void {
   console.log(`loaded ${config.targets.length} target(s), ${enabledCount} enabled`);
 
   const stateStore = new StateStore();
+  const checkTarget = createDispatcher();
 
   const scheduler = new Scheduler(config.targets, checkTarget, {
     onResult: (target, result) => handleCheckResult(stateStore, target, result),

@@ -10,14 +10,14 @@ O núcleo de monitoramento está completo e funcional:
 
 - **Configuração dinâmica** de múltiplos targets (`config/targets.json`), sem precisar alterar código.
 - **HTTP Monitor**: verifica serviços web (sucesso, erro HTTP, timeout, DNS, conexão recusada, TLS).
-- **Máquina de estados** por target (`UNKNOWN → UP → DOWN → UP`), com downtime calculado.
+- **Log Monitor**: acompanha um arquivo de log incrementalmente (sem reler o arquivo inteiro a cada ciclo), procurando por padrões configuráveis; lida com rotação/truncamento/recriação do arquivo.
+- **Máquina de estados** por target (`UNKNOWN → UP → DOWN → UP`), com downtime calculado (para targets HTTP).
 - **Alertas via Discord** (webhook), com cooldown para não floodar o canal, e recuperação notificada separadamente.
 - **Scheduler** que verifica cada target de forma independente, sem sobreposição, sem derrubar o processo por falha de um único serviço.
 
 O que **ainda não existe**:
 
-- Monitor de logs (`type: "log"` na config) — a configuração é aceita, mas o check falha com um erro claro em vez de rodar.
-- Monitor de host/CPU-RAM-disco (`type: "host"` na config) — mesma situação.
+- Monitor de host/CPU-RAM-disco (`type: "host"` na config) — a configuração é aceita, mas o check falha com um erro claro em vez de rodar.
 - Bot do Discord com slash commands (ex.: `/status`) — hoje só existe o envio de alertas via webhook, não um bot interativo.
 
 Veja `docs/PROGRESS.md` para o histórico detalhado de desenvolvimento e decisões tomadas, e `docs/ARCHITECTURE.md` para a arquitetura completa.
@@ -102,7 +102,7 @@ Estrutura geral:
 ```
 
 - **`defaults`**: valores usados por qualquer target que não sobrescrever o campo individualmente.
-- **`targets`**: lista de serviços monitorados. Hoje, apenas `"type": "http"` funciona de verdade (`"log"` e `"host"` são aceitos pela configuração, mas o check falha com um erro claro até esses monitores serem implementados).
+- **`targets`**: lista de serviços monitorados. Hoje, `"type": "http"` e `"type": "log"` funcionam de verdade; `"host"` é aceito pela configuração, mas o check falha com um erro claro até esse monitor ser implementado.
 
 Campos comuns a todo target:
 
@@ -110,13 +110,13 @@ Campos comuns a todo target:
 |---|---|---|
 | `id` | Sim | Identificador único do target (usado internamente para rastrear estado). |
 | `name` | Sim | Nome legível, usado nas notificações. |
-| `type` | Sim | `"http"` (único funcional hoje), `"log"` ou `"host"`. |
+| `type` | Sim | `"http"` ou `"log"` (funcionais hoje), ou `"host"` (ainda não implementado). |
 | `enabled` | Sim | `false` desativa o target sem precisar removê-lo do arquivo. |
 | `intervalSeconds` | Não (usa `defaults`) | Intervalo entre checks, em segundos. |
 | `timeoutMs` | Não (usa `defaults`) | Timeout do check, em milissegundos. |
-| `failureThreshold` | Não (usa `defaults`) | Quantas falhas consecutivas até o target virar `DOWN` e disparar um alerta. |
-| `recoveryThreshold` | Não (usa `defaults`) | Quantos sucessos consecutivos até um target `DOWN` virar `UP` novamente. |
-| `cooldownSeconds` | Não (usa `defaults`) | Tempo mínimo entre alertas repetidos ("lembretes") enquanto o target continua `DOWN`. A notificação de recuperação não espera esse cooldown. |
+| `failureThreshold` | Não (usa `defaults`) | Quantas falhas consecutivas até o target virar `DOWN` e disparar um alerta. **Só se aplica a targets `http`** — um target `log` notifica no primeiro match, sempre. |
+| `recoveryThreshold` | Não (usa `defaults`) | Quantos sucessos consecutivos até um target `DOWN` virar `UP` novamente. **Só se aplica a targets `http`** — o conceito de "recuperação" não existe para `log` (um match de log é um evento pontual, não um estado contínuo). |
+| `cooldownSeconds` | Não (usa `defaults`) | Tempo mínimo entre alertas repetidos enquanto o problema persiste: para `http`, entre lembretes de um serviço que continua `DOWN` (a notificação de recuperação não espera esse cooldown); para `log`, entre notificações de novos matches de padrão. |
 | `discordChannelId` | Não | ID do canal do Discord (reservado para uso futuro pelo Bot; não é necessário hoje). |
 | `discordWebhookEnv` | Sim | Nome da variável de ambiente (definida no `.env`) que contém a URL do webhook usado para notificar sobre esse target. |
 
@@ -129,6 +129,28 @@ Campos específicos de `"type": "http"`:
 | `method` | Não (padrão `"GET"`) | Método HTTP usado no check. |
 
 Um target `http` deve definir exatamente um de `url`/`urlEnv`, nunca os dois. Um sucesso é qualquer resposta HTTP 2xx ou 3xx dentro do timeout; 4xx, 5xx, timeout, falha de DNS, conexão recusada e falha de TLS contam como falha.
+
+Campos específicos de `"type": "log"`:
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `path` | Sim | Caminho do arquivo de log **dentro do container** (veja a nota sobre volumes abaixo). |
+| `patterns` | Sim | Lista de substrings (não regex) que, se aparecerem em uma linha nova, contam como um match — ex.: `["ERROR", "FATAL"]`. |
+
+O Log Monitor lê o arquivo de forma incremental (nunca relê o arquivo inteiro), mantendo a posição de leitura entre checks, e lida com rotação, truncamento e recriação do arquivo automaticamente. **Na primeira vez que um target é verificado, o conteúdo já existente no arquivo não é processado** (como um `tail -f`) — só as linhas escritas depois disso contam. Um match dispara uma notificação imediatamente (o cooldown só entra em ação para não notificar repetidamente por matches muito próximos entre si); `failureThreshold`/`recoveryThreshold` não se aplicam a esse tipo.
+
+Como o arquivo de log normalmente vive no host (ou em outro container), monte-o como volume somente leitura no `docker-compose.yml`:
+
+```yaml
+services:
+  monitor:
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - /caminho/no/host/app.log:/var/log/monitored/app.log:ro
+```
+
+E aponte `path` para o caminho **dentro do container** (`/var/log/monitored/app.log` no exemplo acima), não para o caminho no host.
 
 Configuração inválida é rejeitada no início da execução, com uma mensagem de erro clara indicando o que está errado — o container não vai simplesmente travar silenciosamente.
 
@@ -149,6 +171,7 @@ Todos rodam tanto localmente (se você tiver Node.js 22 instalado) quanto dentro
 - Nunca commite `.env`, tokens, URLs de webhook ou URLs internas sensíveis. `.env` já está no `.gitignore`.
 - A URL de um webhook do Discord **é** uma credencial (contém um token) — trate como uma senha.
 - Erros de conexão nunca incluem a URL completa do target nem a URL do webhook nas mensagens de log/alerta — apenas uma descrição da falha (ex.: "connection refused", "DNS resolution failed").
+- **Targets `log`**: quando um `pattern` bate, a linha correspondente (truncada a 500 caracteres) é incluída na notificação enviada ao Discord. Se a aplicação monitorada loga dados sensíveis (tokens, senhas, dados pessoais) em linhas que coincidem com os `patterns` configurados, esses dados vão parar no canal do Discord. O Monitora não tenta detectar ou redigir segredos dentro de linhas de log — trate isso na aplicação monitorada (não logar segredos em texto plano) ou escolha `patterns` que evitem capturar esse tipo de linha.
 
 ## Estrutura do projeto
 
@@ -169,6 +192,6 @@ docs/
 
 ## Limitações conhecidas (MVP)
 
-- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, etc.). Isso é intencional para o MVP — não há banco de dados.
-- Apenas o **HTTP Monitor** está implementado; targets `log`/`host` são aceitos na configuração, mas não são verificados de verdade ainda.
+- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, offset de leitura de logs, etc.). Isso é intencional para o MVP — não há banco de dados.
+- O **Host Monitor** (`type: "host"`) ainda não está implementado; a configuração é aceita, mas o check falha com um erro claro.
 - Não há Bot do Discord nem comando `/status` ainda — as notificações são só via webhook, em uma via.
