@@ -2,11 +2,11 @@
 
 ## Current Status
 
-O núcleo completo do fluxo documentado está implementado, testado E **ligado** — `src/index.ts` agora carrega a config, roda o Scheduler de verdade com um dispatcher por `target.type`, alimenta o State Store, avalia alertas e envia notificações reais ao Discord quando configurado. Validado rodando de ponta a ponta dentro do Docker contra um servidor HTTP real (não só testes unitários) — ver "Recent Changes" para os dois bugs reais encontrados e corrigidos nessa validação. Repositório no GitHub (`origin/main`). Log/Host Monitor e Discord Bot (`/status`) ainda não existem.
+O núcleo completo do fluxo documentado está implementado, testado e **ligado** — `src/index.ts` carrega a config, roda o Scheduler de verdade, alimenta o State Store, avalia alertas e envia notificações reais ao Discord. Validado rodando de ponta a ponta dentro do Docker contra um servidor HTTP real (não só testes unitários). O projeto agora tem um `README.md` que reflete esse estado real (instalação, configuração de `.env`/`config/targets.json`, limitações). Repositório no GitHub (`origin/main`). Log/Host Monitor e Discord Bot (`/status`) ainda não existem.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. `src/index.ts` foi ligado ao núcleo (Config → Scheduler → Monitor → State Store → Alert Policy → Discord Notifier) e validado com um teste de integração real via Docker.
+Nenhuma tarefa em execução no momento. `README.md` foi criado, cobrindo o que é o projeto, como instalar/rodar, e a configuração de `.env`/`config/targets.json`.
 
 ## Completed
 
@@ -60,6 +60,7 @@ Nenhuma tarefa em execução no momento. `src/index.ts` foi ligado ao núcleo (C
   - `index.ts`: carrega a config (`loadConfigOrExit`, sai com código 1 e mensagem clara em erro crítico de configuração), cria o `StateStore`, cria o `Scheduler` com o dispatcher, liga `onResult` → `stateStore.recordCheckResult` → `evaluateAlert` → (se houver evento) `sendAlertToDiscord`, e trata `SIGTERM`/`SIGINT` parando o Scheduler antes de sair (`process.exit(0)`).
   - `main()` só roda quando o arquivo é o entrypoint real do processo (guard via `import.meta.url` comparado a `pathToFileURL(process.argv[1])`), não quando importado por um teste — ver bug encontrado abaixo.
   - `resolveMonitorName` continua exportado e com seus 3 testes originais intactos.
+- **`README.md`** criado na raiz do projeto: o que é o Monitora, status atual (o que funciona vs o que falta — Log/Host Monitor e Discord Bot), requisitos, quick start (`git clone` → `.env` → `config/targets.json` → `docker compose up`), tabela de configuração de `.env` (deixando claro que `DISCORD_WEBHOOK_MAIN` é só um exemplo de nome, e que `DISCORD_TOKEN`/`DISCORD_CLIENT_ID`/`DISCORD_GUILD_ID` são reservadas e não usadas ainda), tabela de campos de `config/targets.json` (comuns + específicos de `http`), scripts disponíveis, segurança, estrutura do projeto, limitações conhecidas do MVP. Cada comando documentado (`docker compose build/up/down`, `docker compose run --rm monitor <script>`) foi validado rodando de verdade antes de ser escrito, não só copiado de memória.
 
 ## In Progress
 
@@ -67,10 +68,8 @@ Nenhuma tarefa em execução no momento. `src/index.ts` foi ligado ao núcleo (C
 
 ## Next Steps
 
-- README explicando o que é o projeto, como instalar/rodar desde o zero, e quais arquivos precisam ser configurados (`.env`, `config/targets.json`) e como — adiado a pedido do usuário até o núcleo estar ligado (agora está).
 - Implementar o Log Monitor e/ou o Host Monitor (hoje `checkTarget` lança erro claro para esses tipos — nenhum target `log`/`host` pode ser usado ainda de verdade).
 - Depois, considerar o Discord Bot (`/status`, lê o `StateStore` sem rodar healthchecks) — não é prioridade imediata, mencionado aqui só para não esquecer que faz parte do roadmap documentado.
-- Em algum ponto (provavelmente depois do State Store, antes do Discord Notifier), montar o "cabo" em `src/index.ts` que carrega a config, cria o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado) e liga ao State Store — hoje nada disso está conectado ainda.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
 
@@ -117,6 +116,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
 - Ligado `src/index.ts` ao núcleo completo (`src/monitoring/dispatch.ts` novo, 3 testes). Validação foi além de `npm test`: rodei o processo de verdade dentro do Docker, com um target HTTP real apontando para um servidor de teste no host (`host.docker.internal`), e depois derrubei esse servidor para forçar uma falha real. Essa validação (não só testes unitários) encontrou 2 bugs reais, ambos corrigidos:
   1. **O processo morria sozinho segundos após iniciar quando `config.targets` está vazio** (exatamente o estado atual de `config/targets.json`). Sem nenhum target habilitado, o `Scheduler` não cria nenhum timer, e nada mais mantém o event loop do Node vivo — os listeners de `SIGTERM`/`SIGINT` sozinhos não seguram o processo. O container saía com exit code 0 silenciosamente, sem nunca esperar um sinal de verdade. Corrigido com um `setInterval` "heartbeat" (`keepProcessAlive`, ~24.8 dias, nunca dispara de verdade) que mantém o processo vivo até `shutdown()` limpar o timer.
   2. **Cooldown completamente ignorado durante uma falha persistente de entrega ao Discord.** A decisão registrada na etapa da Alert Policy era marcar `lastAlertAt` só após confirmação de sucesso do envio — mas isso significa que, se o envio *sempre* falhar (webhook inválido, Discord fora do ar por um período longo), `lastAlertAt` nunca é setado, e a Alert Policy trata cada novo check como "nunca alertei ainda", tentando reenviar a **cada ciclo de check** (a cada `intervalSeconds`, não a cada `cooldownSeconds`) — na prática, sem cooldown nenhum. Confirmado ao vivo: 5 tentativas em ~15s com um webhook fake. Corrigido revertendo a decisão: `recordAlertSent` agora é chamado assim que o alerta é **decidido**, não quando é **entregue com sucesso**. Retestado no mesmo cenário: exatamente 1 tentativa em 15s (o esperado, já que `cooldownSeconds` era 900).
+- Criado `README.md`. Cada comando documentado nele foi validado rodando de verdade (`docker compose build/up/down`, `docker compose run --rm monitor npm run typecheck`, `docker compose run --rm monitor npm test`), não só descrito de memória. Aproveitado para remover uma entrada desatualizada em "Next Steps" (mencionava "montar o cabo em `src/index.ts`... hoje nada disso está conectado ainda", que já tinha sido concluído numa etapa anterior e não tinha sido removida).
 
 ## Validation
 
@@ -232,6 +232,14 @@ docker stop <teste>   /   docker compose down
 
 docker compose build && docker build --target production -t monitora-production .
 # OK — ambas as imagens reconstruídas com src/index.ts (ligado) e src/monitoring/dispatch.ts novo.
+
+# --- após criar o README.md ---
+
+docker compose run --rm monitor npm run typecheck
+# OK — comando exatamente como documentado no README funciona.
+
+docker compose run --rm monitor npm test
+# OK — 79/79 testes passando também via docker compose run (não só localmente).
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
