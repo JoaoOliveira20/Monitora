@@ -21,6 +21,7 @@ export interface MonitorState {
   lastLatencyMs?: number;
   lastError?: string;
   lastAlertAt?: Date;
+  lastMetadata?: unknown;
 }
 
 export interface StateTransition {

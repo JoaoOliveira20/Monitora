@@ -1,7 +1,10 @@
 import { pathToFileURL } from "node:url";
 
+import type { Client } from "discord.js";
+
 import { loadTargetsConfig } from "./config/loader.js";
 import type { MonitoraConfig, Target } from "./config/schema.js";
+import { startDiscordBot } from "./discord/bot.js";
 import { sendAlertToDiscord } from "./discord/notifier.js";
 import { evaluateAlert } from "./monitoring/alert-policy.js";
 import { createDispatcher } from "./monitoring/dispatch.js";
@@ -62,14 +65,50 @@ function keepProcessAlive(): NodeJS.Timeout {
   return setInterval(() => {}, 2_147_483_647);
 }
 
-async function shutdown(scheduler: Scheduler, keepAliveHandle: NodeJS.Timeout, signal: NodeJS.Signals): Promise<void> {
+async function shutdown(
+  scheduler: Scheduler,
+  keepAliveHandle: NodeJS.Timeout,
+  discordClient: Client | undefined,
+  signal: NodeJS.Signals
+): Promise<void> {
   console.log(`received ${signal}, shutting down`);
   clearInterval(keepAliveHandle);
   await scheduler.stop();
+  discordClient?.destroy();
   process.exit(0);
 }
 
-function startMonitoring(config: MonitoraConfig): void {
+async function maybeStartDiscordBot(
+  monitorName: string,
+  config: MonitoraConfig,
+  stateStore: StateStore
+): Promise<Client | undefined> {
+  const token = process.env.DISCORD_TOKEN;
+  const clientId = process.env.DISCORD_CLIENT_ID;
+
+  if (!token || !clientId) {
+    console.log("Discord bot disabled: DISCORD_TOKEN/DISCORD_CLIENT_ID not set");
+    return undefined;
+  }
+
+  try {
+    const client = await startDiscordBot({
+      token,
+      clientId,
+      guildId: process.env.DISCORD_GUILD_ID || undefined,
+      monitorName,
+      targets: config.targets,
+      stateStore,
+    });
+    console.log("Discord bot connected, /status command registered");
+    return client;
+  } catch (error) {
+    console.error(`failed to start Discord bot: ${getErrorMessage(error)}`);
+    return undefined;
+  }
+}
+
+async function startMonitoring(monitorName: string, config: MonitoraConfig): Promise<void> {
   const enabledCount = config.targets.filter((target) => target.enabled).length;
   console.log(`loaded ${config.targets.length} target(s), ${enabledCount} enabled`);
 
@@ -84,23 +123,24 @@ function startMonitoring(config: MonitoraConfig): void {
   scheduler.start();
 
   const keepAliveHandle = keepProcessAlive();
+  const discordClient = await maybeStartDiscordBot(monitorName, config, stateStore);
 
-  process.on("SIGTERM", () => void shutdown(scheduler, keepAliveHandle, "SIGTERM"));
-  process.on("SIGINT", () => void shutdown(scheduler, keepAliveHandle, "SIGINT"));
+  process.on("SIGTERM", () => void shutdown(scheduler, keepAliveHandle, discordClient, "SIGTERM"));
+  process.on("SIGINT", () => void shutdown(scheduler, keepAliveHandle, discordClient, "SIGINT"));
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const environment = process.env.NODE_ENV ?? "development";
   const monitorName = resolveMonitorName(process.env);
 
   console.log(`${monitorName} starting in ${environment} mode`);
 
   const config = loadConfigOrExit();
-  startMonitoring(config);
+  await startMonitoring(monitorName, config);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMainModule) {
-  main();
+  void main();
 }

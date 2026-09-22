@@ -175,6 +175,16 @@ test("StateStore tracks lastLatencyMs and lastCheckedAt on every check", () => {
   assert.deepEqual(state?.lastCheckedAt, at(0));
 });
 
+test("StateStore keeps the metadata of the most recent check for later inspection (e.g. by /status)", () => {
+  const store = new StateStore();
+  const target = buildTarget();
+
+  store.recordCheckResult(target, buildResult({ success: true, checkedAt: at(0), metadata: { statusCode: 200 } }));
+  store.recordCheckResult(target, buildResult({ success: true, checkedAt: at(60), metadata: { statusCode: 204 } }));
+
+  assert.deepEqual(store.getState("target-1")?.lastMetadata, { statusCode: 204 });
+});
+
 test("StateStore keeps firstFailureAt fixed across multiple consecutive failures while lastFailureAt advances", () => {
   const store = new StateStore();
   const target = buildTarget({ failureThreshold: 5, recoveryThreshold: 1 });

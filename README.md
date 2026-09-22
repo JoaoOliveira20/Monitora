@@ -6,7 +6,7 @@ O objetivo é simples: monitorar múltiplos serviços (sites, APIs) sem precisar
 
 ## Status atual do projeto
 
-O núcleo de monitoramento está completo e funcional:
+O projeto está funcionalmente completo em relação ao que foi planejado originalmente:
 
 - **Configuração dinâmica** de múltiplos targets (`config/targets.json`), sem precisar alterar código.
 - **HTTP Monitor**: verifica serviços web (sucesso, erro HTTP, timeout, DNS, conexão recusada, TLS).
@@ -15,10 +15,7 @@ O núcleo de monitoramento está completo e funcional:
 - **Máquina de estados** por target (`UNKNOWN → UP → DOWN → UP`), com downtime calculado (para targets HTTP e Host).
 - **Alertas via Discord** (webhook), com cooldown para não floodar o canal, e recuperação notificada separadamente.
 - **Scheduler** que verifica cada target de forma independente, sem sobreposição, sem derrubar o processo por falha de um único serviço.
-
-O que **ainda não existe**:
-
-- Bot do Discord com slash commands (ex.: `/status`) — hoje só existe o envio de alertas via webhook, não um bot interativo.
+- **Bot do Discord com o comando `/status`**: mostra o estado atual conhecido de todos os targets, sem rodar nenhum healthcheck novo (lê só o que já está em memória — responde instantaneamente). Opcional: se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` não estiverem configurados, o Monitora roda normalmente sem o bot, só sem o comando interativo.
 
 Veja `docs/PROGRESS.md` para o histórico detalhado de desenvolvimento e decisões tomadas, e `docs/ARCHITECTURE.md` para a arquitetura completa.
 
@@ -65,11 +62,27 @@ Copie `.env.example` para `.env` e preencha:
 | `NODE_ENV` | Não | `development` ou `production`. Já vem preenchida com `development`; o `Dockerfile` força `production` na imagem de produção. |
 | `MONITOR_NAME` | Não | Nome exibido no log de inicialização. Se vazia, usa `"Monitora"`. |
 | `DISCORD_WEBHOOK_MAIN` | Sim, se algum target usar esse nome | **Exemplo** de variável referenciada por um target no `config/targets.json` (campo `discordWebhookEnv`). O nome não é fixo — cada target aponta para a env var que quiser (veja abaixo). O valor é a URL completa do webhook do Discord (`Configurações do Canal → Integrações → Webhooks`). |
-| `DISCORD_WEBHOOK_URL`, `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID` | Não, ainda | Reservadas para quando o Bot do Discord (`/status`) existir. Não usadas por nenhum código hoje — pode deixar em branco. |
+| `DISCORD_WEBHOOK_URL` | Não | Reservada, não usada por nenhum código hoje — pode deixar em branco. |
+| `DISCORD_TOKEN` | Não (só para o Bot `/status`) | Token do Bot do Discord. Sem ela (ou sem `DISCORD_CLIENT_ID`), o Monitora roda normalmente, só sem o comando `/status`. Veja [Configurando o Bot do Discord](#configurando-o-bot-do-discord) abaixo. |
+| `DISCORD_CLIENT_ID` | Não (só para o Bot `/status`) | ID da aplicação do Discord (necessário para registrar o slash command). |
+| `DISCORD_GUILD_ID` | Não | Se definida, o `/status` é registrado só nesse servidor (aparece em segundos). Se vazia, é registrado globalmente (pode levar até ~1h para propagar em todos os servidores). Recomendado preencher durante o desenvolvimento/testes. |
 
 Você pode adicionar quantas variáveis `DISCORD_WEBHOOK_*` quiser, com o nome que preferir — o que importa é que o nome bata com o `discordWebhookEnv` do target correspondente em `config/targets.json`. Vários targets podem compartilhar o mesmo webhook.
 
 **Nunca coloque a URL de um webhook diretamente no `config/targets.json` ou em qualquer arquivo versionado** — a URL do webhook contém um token secreto embutido nela mesma. Ela deve existir apenas no `.env` local (fora do Git).
+
+### Configurando o Bot do Discord
+
+O comando `/status` é opcional — sem ele, o Monitora continua enviando alertas via webhook normalmente. Para habilitar:
+
+1. Vá em [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application**.
+2. Em **Bot**, clique em **Reset Token** para gerar um token — copie e cole em `DISCORD_TOKEN` no `.env`. **Trate esse token como uma senha**: quem o tiver pode controlar o bot.
+3. Em **General Information**, copie o **Application ID** para `DISCORD_CLIENT_ID`.
+4. Em **OAuth2 → URL Generator**, marque os escopos `bot` e `applications.commands` (nenhuma permissão de bot especial é necessária — `/status` só lê o estado em memória). Abra a URL gerada e convide o bot para o seu servidor.
+5. (Recomendado durante testes) Copie o ID do seu servidor (`Configurações do Servidor → Copiar ID do Servidor`, com o modo desenvolvedor ativado no Discord) para `DISCORD_GUILD_ID` — assim o `/status` aparece quase instantaneamente, em vez de esperar a propagação global.
+6. `docker compose up` — o log deve mostrar `Discord bot connected, /status command registered`. Rode `/status` em qualquer canal onde o bot tenha permissão de ver/responder.
+
+Se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` faltarem ou forem inválidos, o Monitora loga isso claramente e continua rodando sem o bot — não é um erro fatal.
 
 ### `config/targets.json`
 
@@ -117,7 +130,7 @@ Campos comuns a todo target:
 | `failureThreshold` | Não (usa `defaults`) | Quantas falhas/excedências consecutivas até o target virar `DOWN` e disparar um alerta. **Só se aplica a targets `http` e `host`** — um target `log` notifica no primeiro match, sempre. |
 | `recoveryThreshold` | Não (usa `defaults`) | Quantos sucessos consecutivos até um target `DOWN` virar `UP` novamente. **Só se aplica a targets `http` e `host`** — o conceito de "recuperação" não existe para `log` (um match de log é um evento pontual, não um estado contínuo). |
 | `cooldownSeconds` | Não (usa `defaults`) | Tempo mínimo entre alertas repetidos enquanto o problema persiste: para `http`/`host`, entre lembretes de um serviço/threshold que continua `DOWN` (a notificação de recuperação não espera esse cooldown); para `log`, entre notificações de novos matches de padrão. |
-| `discordChannelId` | Não | ID do canal do Discord (reservado para uso futuro pelo Bot; não é necessário hoje). |
+| `discordChannelId` | Não | ID do canal do Discord. Não usado por nenhum código hoje — o `/status` responde no canal de onde foi chamado, e os alertas usam `discordWebhookEnv`, não este campo. Reservado para uma futura funcionalidade que ainda não existe. |
 | `discordWebhookEnv` | Sim | Nome da variável de ambiente (definida no `.env`) que contém a URL do webhook usado para notificar sobre esse target. |
 
 Campos específicos de `"type": "http"`:
@@ -195,8 +208,9 @@ Todos rodam tanto localmente (se você tiver Node.js 22 instalado) quanto dentro
 config/targets.json     configuração dos targets monitorados
 logs/                   logs de execução da própria aplicação (não os logs monitorados)
 src/
+  commands/              handler do comando /status (função pura, sem depender do discord.js)
   config/                carregamento e validação de config/targets.json
-  discord/               envio de notificações ao Discord (webhook)
+  discord/               bot (slash command) e notifier (webhook)
   logs/                  Log Monitor (leitura incremental de arquivos de log monitorados)
   monitoring/             scheduler, HTTP monitor, state store, alert policy, dispatch
   system/                Host Monitor (métricas via Node Exporter)
@@ -211,6 +225,6 @@ docs/
 
 ## Limitações conhecidas (MVP)
 
-- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, offset de leitura de logs, baseline de CPU, etc.). Isso é intencional para o MVP — não há banco de dados.
+- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, offset de leitura de logs, baseline de CPU, etc.). Isso é intencional para o MVP — não há banco de dados. O `/status` também reflete esse estado em memória: reiniciar o container zera o que o comando mostra.
 - **Host Monitor** depende de um Node Exporter acessível — sem ele (ou com a URL errada), o target simplesmente falha a cada check com um erro claro, como qualquer outra falha de rede.
-- Não há Bot do Discord nem comando `/status` ainda — as notificações são só via webhook, em uma via.
+- O Bot do Discord só tem o comando `/status` — não há outros comandos interativos (ex.: pausar/reativar um target via Discord).

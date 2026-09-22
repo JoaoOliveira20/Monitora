@@ -73,6 +73,7 @@ export class StateStore {
       lastLatencyMs: result.durationMs,
       lastError: result.success ? undefined : result.error,
       lastAlertAt: previous.lastAlertAt,
+      lastMetadata: result.metadata,
     };
 
     this.states.set(target.id, next);
