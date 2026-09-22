@@ -2,11 +2,11 @@
 
 ## Current Status
 
-Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor e Scheduler implementados e testados. Nada ainda está "ligado" em `src/index.ts` (não há um processo de fato rodando o ciclo completo config → scheduler → monitor). Log/Host Monitor, State Store, Alert Policy e Discord Notifier ainda não existem.
+Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor, Scheduler e State Store implementados e testados. Nada ainda está "ligado" em `src/index.ts` (não há um processo de fato rodando o ciclo completo config → scheduler → monitor → state store). Log/Host Monitor, Alert Policy e Discord Notifier ainda não existem.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. A implementação do Scheduler foi concluída.
+Nenhuma tarefa em execução no momento. A implementação do State Store foi concluída.
 
 ## Completed
 
@@ -36,6 +36,12 @@ Nenhuma tarefa em execução no momento. A implementação do Scheduler foi conc
   - 8 testes (`tests/http-monitor.test.ts`) usando um servidor HTTP local efêmero (`node:http`, porta 0) — sem depender de rede externa: sucesso 200, redirect 3xx, erro 4xx, erro 5xx, timeout, connection refused, `urlEnv` ausente, `urlEnv` resolvido corretamente.
 - **Scheduler** (`src/monitoring/scheduler.ts`): classe `Scheduler(targets, checkTarget, callbacks?)` — recebe a lista de `Target[]` (do config) e uma função `checkTarget: (target: Target) => Promise<CheckResult>` injetada de fora (não conhece HTTP/Log/Host Monitor nem Discord). Cada target roda seu próprio laço independente ("self-scheduling": check → aguarda conclusão → espera `intervalSeconds` → repete), o que garante naturalmente que nunca há dois checks simultâneos do mesmo target, e que um target lento não bloqueia os outros (laços independentes). `start()` ignora targets com `enabled: false` e lança erro se chamado enquanto já está rodando. Falhas em `checkTarget` são capturadas (nunca derrubam o loop nem o processo) e reportadas via callback `onCheckError`; resultados bem-sucedidos vão para `onResult`. `stop()` usa `AbortController` para interromper a espera entre execuções imediatamente (não espera o intervalo inteiro passar) mas aguarda (`Promise.allSettled`) qualquer check já em andamento terminar antes de resolver — shutdown limpo conforme a arquitetura.
   - 9 testes (`tests/scheduler.test.ts`), com timers reais (delays pequenos, sem mock de tempo): intervalo respeitado, sem sobreposição do mesmo target, isolamento entre targets (lento não bloqueia rápido), continua agendando após falha, callback de resultado, ignora desabilitados, `stop()` rápido, `stop()` espera check em andamento, `start()` duplo lança erro. Suíte rodada 3x seguidas para checar estabilidade de timing — sem flakiness observada.
+- **State Store em memória** (`src/monitoring/state-store.ts`), com os tipos `TargetStatus`, `MonitorState`, `StateTransition` adicionados a `src/types/index.ts`. Classe `StateStore` com `Map<targetId, MonitorState>` interno (nunca compartilha estado entre targets). `recordCheckResult(target, result)` aplica a máquina de estados `UNKNOWN → UP → DOWN` e retorna a `StateTransition` só quando o status realmente muda (senão `undefined`). Duas interpretações registradas onde a doc não era 100% explícita:
+  1. `UNKNOWN → UP` ocorre no primeiro sucesso (não exige `recoveryThreshold`) — não faz sentido "confirmar recuperação" de um estado que nunca foi ruim.
+  2. `UNKNOWN → DOWN` exige `failureThreshold` (mesma regra de `UP → DOWN`), para não gerar falso positivo numa falha isolada logo na inicialização.
+  3. `firstFailureAt`/downtime são contados desde a **primeira falha da sequência consecutiva atual**, não desde o momento em que `DOWN` foi oficialmente confirmado — dá um downtime mais preciso do ponto de vista do usuário final.
+  - `lastAlertAt` existe no `MonitorState` (parte do domínio documentado), mas nada escreve nele ainda — isso é responsabilidade da Alert Policy (próxima etapa), que ainda não existe. Não foi criado nenhum método especulativo pra isso.
+  - 13 testes (`tests/state-store.test.ts`): transições UNKNOWN→UP, UNKNOWN→DOWN (com failureThreshold), UP→DOWN, DOWN→UP (com recoveryThreshold), reset de contador de falha/sucesso, **flapping** (uma recuperação parcial interrompida por nova falha reseta o contador de sucessos), downtime calculado desde a primeira falha (não desde a confirmação), `firstFailureAt` fixo através de múltiplas falhas mas `lastFailureAt` avançando, `lastSuccessAt`/`lastFailureAt` como históricos independentes, isolamento entre targets.
 
 ## In Progress
 
@@ -43,8 +49,8 @@ Nenhuma tarefa em execução no momento. A implementação do Scheduler foi conc
 
 ## Next Steps
 
-- Implementar o `State Store` em memória (`src/monitoring/state-store.ts`) com a máquina de estados `UNKNOWN → UP → DOWN`, failure/recovery threshold e cálculo de downtime.
-- Somente depois disso, implementar a `Alert Policy` e o `Discord Notifier` com o envio real de embeds.
+- Implementar a `Alert Policy` (`src/discord/` ou `src/monitoring/`? — decidir na hora, ver `docs/ARCHITECTURE.md` seção 13): consome `StateTransition` do State Store, decide se deve gerar um `AlertEvent` (DOWN, RECOVERED), aplica cooldown/throttling (`cooldownSeconds`) e escreve em `lastAlertAt` no `MonitorState` (primeiro consumidor real desse campo).
+- Depois, o `Discord Notifier` com o envio real de embeds (webhook).
 - Em algum ponto (provavelmente depois do State Store, antes do Discord Notifier), montar o "cabo" em `src/index.ts` que carrega a config, cria o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado) e liga ao State Store — hoje nada disso está conectado ainda.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
@@ -82,6 +88,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
   2. **`url` do HTTP target sem validação de formato**: `url: "not-a-url-at-all"` passava sem erro. Adicionada `requireUrlString` (usa o `URL` nativo do Node em try/catch) aplicada ao campo `url` quando presente (não se aplica a `urlEnv`, que é só o nome de uma env var). Dois testes de regressão adicionados.
 - Implementado o HTTP Monitor (`src/monitoring/http-monitor.ts`) e o tipo `CheckResult` genérico (`src/types/index.ts`), com 8 testes novos usando servidor HTTP local efêmero. Durante a implementação, uma investigação empírica (scripts `tsx` descartáveis, depois apagados) confirmou o comportamento de `redirect: "manual"` no Node e revelou que a porta 1 é bloqueada pelo `fetch`/undici antes de tentar conectar — o teste inicial de "connection refused" estava testando o cenário errado e foi corrigido para usar uma porta alta válida.
 - Implementado o Scheduler (`src/monitoring/scheduler.ts`), com 9 testes novos cobrindo intervalo, ausência de sobreposição, isolamento entre targets, resiliência a falhas e shutdown limpo.
+- Implementado o State Store (`src/monitoring/state-store.ts`) e os tipos `TargetStatus`/`MonitorState`/`StateTransition` (`src/types/index.ts`), com 13 testes novos cobrindo a máquina de estados, thresholds, flapping, downtime e isolamento entre targets.
 
 ## Validation
 
@@ -98,8 +105,9 @@ npm run build
 # OK — tsc -p tsconfig.build.json gerou dist/index.js.
 
 npm test
-# OK — 39 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
-# 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts.
+# OK — 53 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
+# 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts,
+# 13 de src/monitoring/state-store.ts.
 # Suíte completa rodada 3x seguidas para checar flakiness de timing nos testes do Scheduler — estável nas 3.
 
 npm start
@@ -150,6 +158,11 @@ docker compose build && docker build --target production -t monitora-production 
 
 docker compose build && docker build --target production -t monitora-production .
 # OK — ambas as imagens reconstruídas com src/monitoring/scheduler.ts novo.
+
+# --- após implementar o State Store ---
+
+docker compose build && docker build --target production -t monitora-production .
+# OK — ambas as imagens reconstruídas com src/monitoring/state-store.ts novo.
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
