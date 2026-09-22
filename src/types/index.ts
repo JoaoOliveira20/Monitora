@@ -31,7 +31,7 @@ export interface StateTransition {
   downtimeMs?: number;
 }
 
-export type AlertEventType = "DOWN" | "RECOVERED" | "LOG_MATCH";
+export type AlertEventType = "DOWN" | "RECOVERED" | "LOG_MATCH" | "HOST_THRESHOLD";
 
 export interface DownAlertMetadata {
   consecutiveFailures: number;
@@ -46,6 +46,12 @@ export interface LogCheckMetadata {
   matchedPattern?: string;
   matchedLine?: string;
   matchCount: number;
+}
+
+export interface HostCheckMetadata {
+  cpuPercent?: number;
+  memoryPercent?: number;
+  diskPercent?: number;
 }
 
 interface AlertEventCommon {
@@ -70,4 +76,9 @@ export interface LogMatchAlertEvent extends AlertEventCommon {
   metadata: LogCheckMetadata;
 }
 
-export type AlertEvent = DownAlertEvent | RecoveredAlertEvent | LogMatchAlertEvent;
+export interface HostThresholdAlertEvent extends AlertEventCommon {
+  type: "HOST_THRESHOLD";
+  metadata: HostCheckMetadata;
+}
+
+export type AlertEvent = DownAlertEvent | RecoveredAlertEvent | LogMatchAlertEvent | HostThresholdAlertEvent;

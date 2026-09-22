@@ -79,6 +79,23 @@ function buildLogMatchEmbed(event: Extract<AlertEvent, { type: "LOG_MATCH" }>): 
   return embed;
 }
 
+function formatPercent(value: number | undefined): string {
+  return value !== undefined ? `${value.toFixed(1)}%` : "unknown";
+}
+
+function buildHostThresholdEmbed(event: Extract<AlertEvent, { type: "HOST_THRESHOLD" }>): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle("🟠 Host threshold exceeded")
+    .setColor(Colors.Orange)
+    .addFields(
+      { name: "Service", value: event.targetName, inline: true },
+      { name: "CPU", value: formatPercent(event.metadata.cpuPercent), inline: true },
+      { name: "Memory", value: formatPercent(event.metadata.memoryPercent), inline: true },
+      { name: "Disk", value: formatPercent(event.metadata.diskPercent), inline: true },
+      { name: "Detected at", value: formatTime(event.occurredAt), inline: true }
+    );
+}
+
 function buildEmbed(event: AlertEvent): EmbedBuilder {
   switch (event.type) {
     case "DOWN":
@@ -87,6 +104,8 @@ function buildEmbed(event: AlertEvent): EmbedBuilder {
       return buildRecoveredEmbed(event);
     case "LOG_MATCH":
       return buildLogMatchEmbed(event);
+    case "HOST_THRESHOLD":
+      return buildHostThresholdEmbed(event);
   }
 }
 

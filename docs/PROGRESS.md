@@ -2,11 +2,11 @@
 
 ## Current Status
 
-O núcleo completo do fluxo documentado está implementado, testado e ligado, e agora **o Log Monitor também está implementado**. `src/index.ts` carrega a config, roda o Scheduler de verdade (com dispatch para HTTP ou Log conforme `target.type`), alimenta o State Store, avalia alertas (incluindo o novo tipo `LOG_MATCH`) e envia notificações reais ao Discord. Validado rodando de ponta a ponta dentro do Docker, inclusive com um arquivo de log montado via volume read-only (o cenário real documentado na arquitetura) — essa validação encontrou e corrigiu um problema real de *design* (ver "Recent Changes"), não só de implementação. `README.md` reflete esse estado. Repositório no GitHub (`origin/main`). Só o Host Monitor e o Discord Bot (`/status`) ainda não existem.
+Todos os três tipos de monitor documentados (HTTP, Log, **e agora Host**) estão implementados, ligados e testados. `src/index.ts` roda o ciclo completo: Config → Scheduler → Monitor (dispatch por `target.type`) → CheckResult → State Store → Alert Policy (`DOWN`/`RECOVERED`/`LOG_MATCH`/`HOST_THRESHOLD`) → Discord Notifier. O Host Monitor consulta um Node Exporter via HTTP (nunca lê `/proc`/`/sys` do container, conforme a arquitetura exige) — o Node Exporter agora roda como serviço no `docker-compose.yml`. Validado de ponta a ponta com um Node Exporter **real** rodando via compose (não um mock). `README.md` reflete esse estado. Repositório no GitHub (`origin/main`). Só o Discord Bot (`/status`) ainda não existe — é o único item pendente do roadmap documentado.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. O Log Monitor foi implementado, e a Alert Policy/Discord Notifier foram ajustados para suportar o tipo de evento `LOG_MATCH` corretamente.
+Nenhuma tarefa em execução no momento. O Host Monitor foi implementado (incluindo um parser do formato de exposição do Prometheus e o serviço Node Exporter no compose), e a Alert Policy/Discord Notifier foram ajustados para suportar o tipo de evento `HOST_THRESHOLD`.
 
 ## Completed
 
@@ -75,6 +75,16 @@ Nenhuma tarefa em execução no momento. O Log Monitor foi implementado, e a Ale
   4. Discord Notifier ganhou `buildLogMatchEmbed` (🟠 "Log Pattern Matched", campos Service/Matches/Detected at/Pattern/Line).
   - Retestado ao vivo no mesmo cenário Docker que revelou o bug: uma linha ERROR agora gera exatamente 1 tentativa de notificação em 12s (6 ciclos de check), não mais o flapping `DOWN`→`RECOVERED`. Uma segunda linha de erro pouco depois foi corretamente suprimida pelo cooldown (900s configurado, ~17s decorridos) — confirma que o cooldown entre matches distintos também funciona.
   - Testes atualizados/adicionados: `evaluateAlert` ganhou 4 testes novos para o caminho `log` (`tests/alert-policy.test.ts`, agora 20 testes no arquivo), `sendAlertToDiscord` ganhou 2 testes para o embed `LOG_MATCH` (`tests/discord-notifier.test.ts`, agora 11), `dispatch.test.ts` teve seu teste de log atualizado para confirmar o dispatch real (antes testava só o erro "not implemented").
+- **Host Monitor implementado** (`src/monitoring/host-monitor.ts`, classe `HostMonitor`), consultando um Node Exporter via HTTP (nunca lê `/proc`/`/sys` do próprio container, conforme `docs/ARCHITECTURE.md` seção 16 exige explicitamente). Antes de implementar, pausei para alinhar com o usuário uma decisão de infraestrutura real: adicionar o Node Exporter como serviço no `docker-compose.yml` (escolhido) vs. deixar totalmente fora do escopo. Peças:
+  - **`src/config/schema.ts`**: `HostTarget` ganhou `metricsUrl` (obrigatório, validado como URL) e `diskMountpoint` (opcional, default `"/"`). Também resolvida a dívida técnica registrada na etapa do Config Loader ("host target sem nenhum threshold é aceito mas nunca alerta"): agora rejeitado com erro claro quando `enabled: true` e nenhum dos três thresholds está definido.
+  - **`src/monitoring/prometheus-parser.ts`** (função pura, sem estado): `parsePrometheusText()` faz parsing do formato de exposição de texto do Prometheus (linha por linha, ignora comentários/linhas vazias, extrai `metric_name{labels} value`, suporta notação científica). `findSample`/`findSamples` para consultar por nome + filtro de labels. 8 testes com uma fixture realista baseada no formato real do node_exporter.
+  - **`src/monitoring/network-errors.ts`** (novo): extraí `describeFetchFailure` (categoriza timeout/DNS/connection refused/TLS) de `http-monitor.ts` para um módulo compartilhado, já que o Host Monitor precisava exatamente da mesma lógica — duplicar teria sido um retrocesso real. `http-monitor.ts` atualizado para importar dali; nenhum teste quebrou.
+  - **`HostMonitor.checkTarget`**: busca o texto do Node Exporter (timeout via `AbortController`, mesmo padrão do HTTP Monitor), faz o parsing, e calcula: memória e disco a partir de valores instantâneos (`node_memory_MemTotal_bytes`/`MemAvailable_bytes`, `node_filesystem_size_bytes`/`avail_bytes` filtrado por `diskMountpoint`); CPU a partir do **delta entre duas leituras sucessivas** de `node_cpu_seconds_total` (é um contador cumulativo desde o boot, não um valor instantâneo — soma todos os cores/modos, calcula `1 - (delta idle / delta total)`). Por isso a classe mantém estado interno (`Map<targetId, CpuSnapshot>`, mesmo padrão do `LogMonitor`) e `cpuPercent` fica `undefined` no primeiro check de cada target (sem baseline ainda). `success: false` quando qualquer métrica configurada excede seu threshold. 9 testes (`tests/host-monitor.test.ts`) com um servidor HTTP local servindo texto Prometheus controlável — cobrindo cálculo de memória/disco, ausência de CPU na primeira leitura, cálculo correto do delta de CPU na segunda, threshold excedido, todos os thresholds normais, `diskMountpoint` customizado, connection refused, status HTTP não-OK, isolamento de baseline de CPU entre targets.
+  - **Alert Policy**: ao contrário do Log Monitor, aqui a decisão foi **reaproveitar** a máquina de estados `UP`/`DOWN` do State Store (não criar um caminho totalmente à parte) — "CPU alta" é um estado contínuo que pode persistir e se recuperar, semanticamente muito mais parecido com "serviço fora do ar" do que com "linha de log apareceu". `evaluateAlert` ganhou um terceiro branch (`target.type === "host"`): transição para `DOWN` gera `HOST_THRESHOLD` (não `DOWN`) imediatamente; transição `DOWN → UP` gera `RECOVERED` (tipo reaproveitado); reminders durante um threshold persistente respeitam `cooldownSeconds` igual ao HTTP. 4 testes novos.
+  - **Discord Notifier**: `buildHostThresholdEmbed`, seguindo o formato exato documentado no blueprint (🟠 "Host threshold exceeded", campos Service/CPU/Memory/Disk/Detected at, métricas ausentes mostradas como "unknown"). 2 testes novos.
+  - **`docker-compose.yml`**: serviço `node-exporter` (`prom/node-exporter:v1.8.2`), com os volumes/flags padrão para expor métricas do host (`/proc`, `/sys`, `/` montados read-only), sem porta publicada (acessível só via rede interna do compose, nome do serviço `node-exporter:9100`).
+  - **Achado empírico real durante a validação de integração**: rodando o Node Exporter de verdade via `docker compose up -d node-exporter` e inspecionando `/metrics` (container `curlimages/curl` na mesma rede), confirmei que em Docker Desktop no Windows o "host" que o Node Exporter enxerga é a VM interna do Docker Desktop (WSL2), não o Windows físico — e essa VM **não tem um mountpoint `/` tradicional** (tem `/tmp`, `/var`, `/run`, `/mnt/docker-desktop-disk`, etc., mas nenhum listado como `mountpoint="/"`). Isso não é um bug do projeto — é assim que o Docker Desktop funciona — mas o default `diskMountpoint: "/"` não funciona out-of-the-box nesse ambiente específico. Documentado com destaque no README (com o comando exato para listar mountpoints disponíveis) para não confundir quem testar localmente no Windows/Mac; em produção (host Linux real), `/` funciona normalmente.
+  - **Validação de integração real** (não só `npm test`): subi o stack completo via `docker compose up -d --build` com um host target real (`cpuThresholdPercent: 0.01`, para garantir que o threshold seria excedido de imediato) apontando para `http://node-exporter:9100/metrics` e `diskMountpoint: "/tmp"` (mountpoint real disponível no ambiente). Confirmado: o Monitora conectou ao Node Exporter real, calculou as métricas, gerou `HOST_THRESHOLD`, e tentou notificar (falhou com webhook fake, como esperado). Esperei ~23s (7+ ciclos de 3s) e confirmei exatamente 1 tentativa de alerta — cooldown respeitado, sem o problema de flapping que apareceu no Log Monitor (confirma que reaproveitar DOWN/RECOVERED foi a decisão certa aqui). `docker compose down` do stack completo (monitor + node-exporter) em ~1s, sem precisar do timeout forçado. `.env`/`config/targets.json` reais restaurados ao final.
 
 ## In Progress
 
@@ -82,8 +92,7 @@ Nenhuma tarefa em execução no momento. O Log Monitor foi implementado, e a Ale
 
 ## Next Steps
 
-- Implementar o Host Monitor (hoje `checkTarget` lança erro claro para `type: "host"` — nenhum target desse tipo pode ser usado de verdade ainda). Ao implementar, decidir também como o `HOST_THRESHOLD` alert event (mencionado em `docs/ARCHITECTURE.md` seção 18, ainda não implementado) deve funcionar — provavelmente análogo ao `LOG_MATCH` (evento pontual, não a máquina de estados DOWN/RECOVERED), já que "threshold excedido" tem a mesma natureza de evento discreto que "linha de log bateu um padrão".
-- Depois, considerar o Discord Bot (`/status`, lê o `StateStore` sem rodar healthchecks) — não é prioridade imediata, mencionado aqui só para não esquecer que faz parte do roadmap documentado.
+- Único item pendente do roadmap documentado: o Discord Bot (`/status`, lê o `StateStore` sem rodar healthchecks — ver `docs/ARCHITECTURE.md` seção 19). Vai exigir decisões novas: `DISCORD_TOKEN`/`DISCORD_CLIENT_ID`/`DISCORD_GUILD_ID` (já reservadas no `.env.example` mas nunca usadas) precisam ser lidas de verdade, registro de slash command, e um processo de longa duração adicional (o bot) rodando junto do scheduler dentro do mesmo container — pensar se isso cabe no mesmo `index.ts` ou precisa de outra estrutura.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
 
@@ -132,6 +141,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
   2. **Cooldown completamente ignorado durante uma falha persistente de entrega ao Discord.** A decisão registrada na etapa da Alert Policy era marcar `lastAlertAt` só após confirmação de sucesso do envio — mas isso significa que, se o envio *sempre* falhar (webhook inválido, Discord fora do ar por um período longo), `lastAlertAt` nunca é setado, e a Alert Policy trata cada novo check como "nunca alertei ainda", tentando reenviar a **cada ciclo de check** (a cada `intervalSeconds`, não a cada `cooldownSeconds`) — na prática, sem cooldown nenhum. Confirmado ao vivo: 5 tentativas em ~15s com um webhook fake. Corrigido revertendo a decisão: `recordAlertSent` agora é chamado assim que o alerta é **decidido**, não quando é **entregue com sucesso**. Retestado no mesmo cenário: exatamente 1 tentativa em 15s (o esperado, já que `cooldownSeconds` era 900).
 - Criado `README.md`. Cada comando documentado nele foi validado rodando de verdade (`docker compose build/up/down`, `docker compose run --rm monitor npm run typecheck`, `docker compose run --rm monitor npm test`), não só descrito de memória. Aproveitado para remover uma entrada desatualizada em "Next Steps" (mencionava "montar o cabo em `src/index.ts`... hoje nada disso está conectado ainda", que já tinha sido concluído numa etapa anterior e não tinha sido removida).
 - Implementado o Log Monitor (`src/monitoring/log-monitor.ts`, 11 testes) e `createDispatcher()` (antes `checkTarget` livre) para acomodar seu estado interno. Validação de integração real via Docker com um arquivo de log montado via volume `:ro` (o cenário documentado na arquitetura) revelou um problema real de design — reaproveitar a máquina de estados DOWN/RECOVERED do HTTP para logs gerava um ciclo de flapping DOWN→RECOVERED a cada linha de erro isolada. Corrigido implementando o tipo de evento `LOG_MATCH` que a arquitetura já prevía mas nunca tinha sido implementado: `evaluateAlert` agora ramifica por `target.type`, ignorando completamente a transição DOWN/RECOVERED do State Store para targets `log` (que passam a nunca gerar DOWN/RECOVERED, só LOG_MATCH). Discord Notifier ganhou o embed correspondente. Retestado ao vivo no mesmo cenário: 1 notificação por evento de erro, cooldown respeitado entre matches distintos. README e config/targets.json real restaurados sem alterações permanentes de teste.
+- Antes de implementar o Host Monitor, pausei para alinhar com o usuário: adicionar o Node Exporter ao `docker-compose.yml` (escolhido) vs. deixar de fora. Implementado `src/monitoring/host-monitor.ts` (classe `HostMonitor`, consulta HTTP a um Node Exporter, nunca lê `/proc`/`/sys` do container), `src/monitoring/prometheus-parser.ts` (parser do formato de exposição do Prometheus, função pura, 8 testes), e `src/monitoring/network-errors.ts` (extraído de `http-monitor.ts` para compartilhar a categorização de erros de rede com o novo monitor, evitando duplicação). Schema (`HostTarget`) ganhou `metricsUrl`/`diskMountpoint`, e a dívida técnica de "host target sem threshold nunca alerta" foi resolvida com uma validação explícita. Diferente do Log Monitor, a Alert Policy para `host` **reaproveita** a máquina de estados DOWN/RECOVERED (decisão consciente: "CPU alta" é um estado contínuo que se recupera, ao contrário de uma linha de log) — só troca o tipo do evento de `DOWN` para `HOST_THRESHOLD`. Discord Notifier ganhou o embed correspondente, no formato exato do blueprint. Validação de integração real com o Node Exporter rodando de verdade via `docker compose up -d node-exporter` revelou que, em Docker Desktop no Windows, a VM interna do Docker Desktop não tem um mountpoint `/` tradicional — documentado no README com o comando exato para investigar isso em qualquer ambiente. Retestado o stack completo (monitor + node-exporter reais) com `diskMountpoint: "/tmp"`: `HOST_THRESHOLD` disparado corretamente, exatamente 1 tentativa em ~23s (cooldown respeitado, sem o flapping que apareceu no Log Monitor). `.env`/`config/targets.json` reais restaurados ao final.
 
 ## Validation
 
@@ -148,11 +158,11 @@ npm run build
 # OK — tsc -p tsconfig.build.json gerou dist/index.js.
 
 npm test
-# OK — 97 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
-# 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts,
-# 15 de src/monitoring/state-store.ts, 20 de src/monitoring/alert-policy.ts, 11 de src/discord/notifier.ts,
-# 3 de src/monitoring/dispatch.ts, 11 de src/monitoring/log-monitor.ts (mock nativo do node:test onde
-# aplicável, sem Discord real, sem rede externa).
+# OK — 124 testes passaram (tsx --test "tests/**/*.test.ts"): 3 resolve-monitor-name, 18 config-schema,
+# 5 config-loader, 8 http-monitor, 9 scheduler, 16 state-store, 21 alert-policy, 13 discord-notifier,
+# 3 dispatch, 11 log-monitor, 9 host-monitor, 8 prometheus-parser (mock nativo do node:test onde
+# aplicável, sem Discord real, sem rede externa — host-monitor usa um servidor HTTP local servindo
+# texto Prometheus controlável, não o Node Exporter real).
 # Suíte completa rodada 3x seguidas para checar flakiness de timing nos testes do Scheduler — estável nas 3.
 # Confirmado que importar src/index.ts (para tests/resolve-monitor-name.test.ts) não dispara mais o
 # bootstrap real (carregar config, iniciar scheduler) — a mensagem de log de startup não vaza mais no
@@ -283,8 +293,45 @@ docker run -d --name <teste> -v "<dir-host>:/var/log/monitored:ro" -e SMOKE_TEST
 
 docker compose build && docker build --target production -t monitora-production .
 # OK — ambas as imagens reconstruídas com src/monitoring/log-monitor.ts novo e o dispatch atualizado.
+
+# --- após implementar o Host Monitor e o serviço node-exporter no compose ---
+
+docker compose config
+# OK — sintaxe válida com o novo serviço node-exporter (imagem prom/node-exporter:v1.8.2, volumes
+# read-only de /proc, /sys e /, sem porta publicada).
+
+docker compose up -d node-exporter
+docker run --rm --network monitora_default curlimages/curl:latest -s http://node-exporter:9100/metrics
+# OK — Node Exporter real respondendo métricas reais. node_cpu_seconds_total e
+# node_memory_Mem{Total,Available}_bytes presentes como esperado.
+# ACHADO: node_filesystem_size_bytes/avail_bytes NUNCA aparece com mountpoint="/" neste ambiente
+# (Docker Desktop/Windows) — a VM interna do Docker Desktop não expõe um "/" tradicional (tem /tmp,
+# /var, /run, /mnt/docker-desktop-disk, etc.). Não é um bug; documentado no README com o comando
+# exato usado aqui para diagnosticar isso em qualquer ambiente.
+
+docker compose up -d --build
+# Stack completo (monitor real + node-exporter real) com um host target real
+# (metricsUrl: http://node-exporter:9100/metrics, diskMountpoint: /tmp, cpuThresholdPercent: 0.01
+# para garantir excedência imediata, discordWebhookEnv apontando para um webhook fake):
+#   - "loaded 1 target(s), 1 enabled" confirmado no log.
+#   - "failed to deliver alert... HOST_THRESHOLD" apareceu (webhook fake, como esperado) — confirma
+#     que o Monitora conectou ao Node Exporter real, calculou métricas reais e decidiu alertar.
+#   - Esperado ~23s (7+ ciclos de 3s): exatamente 1 tentativa de alerta, não repetida — cooldown
+#     respeitado, sem o flapping que apareceu na etapa do Log Monitor (confirma que reaproveitar a
+#     máquina de estados DOWN/RECOVERED foi a decisão correta para host, diferente de log).
+
+docker compose down
+# OK — stack completo (monitor + node-exporter) parado em ~1s, sem precisar do timeout de 10s.
+# .env e config/targets.json reais restaurados ao final; nenhuma alteração permanente de teste.
+
+npm run typecheck && npm run build && npm test
+# OK — 124/124 testes.
+
+docker compose build monitor && docker build --target production -t monitora-production .
+# OK — ambas as imagens reconstruídas com src/monitoring/host-monitor.ts, prometheus-parser.ts e
+# network-errors.ts novos.
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
 
-Todas as validações mínimas exigidas passaram, incluindo execução real via `docker compose up` (não só `build`).
+Todas as validações mínimas exigidas passaram, incluindo execução real via `docker compose up` (não só `build`), com um Node Exporter de verdade (não mockado) na validação final.

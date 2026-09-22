@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import type { HttpTarget } from "../config/schema.js";
 import type { CheckResult } from "../types/index.js";
+import { describeFetchFailure } from "./network-errors.js";
 
 export interface HttpCheckMetadata {
   statusCode?: number;
@@ -20,30 +21,6 @@ function resolveTargetUrl(target: HttpTarget): string {
   }
 
   return envValue;
-}
-
-function isNodeErrorWithCause(error: unknown): error is Error & { cause?: { code?: string } } {
-  return error instanceof Error;
-}
-
-function describeRequestFailure(error: unknown, timeoutMs: number): string {
-  if (error instanceof Error && error.name === "AbortError") {
-    return `request timed out after ${timeoutMs}ms`;
-  }
-
-  const code = isNodeErrorWithCause(error) ? error.cause?.code : undefined;
-
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
-    return "DNS resolution failed";
-  }
-  if (code === "ECONNREFUSED") {
-    return "connection refused";
-  }
-  if (typeof code === "string" && (code.startsWith("ERR_TLS") || code.startsWith("CERT_"))) {
-    return "TLS handshake failed";
-  }
-
-  return "request failed";
 }
 
 function isHealthyStatusCode(statusCode: number | undefined): boolean {
@@ -65,7 +42,7 @@ async function performRequest(
     });
     return { statusCode: response.status };
   } catch (error) {
-    return { failureReason: describeRequestFailure(error, target.timeoutMs) };
+    return { failureReason: describeFetchFailure(error, target.timeoutMs) };
   } finally {
     clearTimeout(timeoutHandle);
   }

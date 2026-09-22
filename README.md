@@ -11,13 +11,13 @@ O núcleo de monitoramento está completo e funcional:
 - **Configuração dinâmica** de múltiplos targets (`config/targets.json`), sem precisar alterar código.
 - **HTTP Monitor**: verifica serviços web (sucesso, erro HTTP, timeout, DNS, conexão recusada, TLS).
 - **Log Monitor**: acompanha um arquivo de log incrementalmente (sem reler o arquivo inteiro a cada ciclo), procurando por padrões configuráveis; lida com rotação/truncamento/recriação do arquivo.
-- **Máquina de estados** por target (`UNKNOWN → UP → DOWN → UP`), com downtime calculado (para targets HTTP).
+- **Host Monitor**: acompanha CPU, memória e disco de uma máquina através de um [Node Exporter](https://github.com/prometheus/node_exporter) (já incluso no `docker-compose.yml` deste projeto). Não lê `/proc`/`/sys` diretamente de dentro do container — isso daria métricas do container, não da máquina física.
+- **Máquina de estados** por target (`UNKNOWN → UP → DOWN → UP`), com downtime calculado (para targets HTTP e Host).
 - **Alertas via Discord** (webhook), com cooldown para não floodar o canal, e recuperação notificada separadamente.
 - **Scheduler** que verifica cada target de forma independente, sem sobreposição, sem derrubar o processo por falha de um único serviço.
 
 O que **ainda não existe**:
 
-- Monitor de host/CPU-RAM-disco (`type: "host"` na config) — a configuração é aceita, mas o check falha com um erro claro em vez de rodar.
 - Bot do Discord com slash commands (ex.: `/status`) — hoje só existe o envio de alertas via webhook, não um bot interativo.
 
 Veja `docs/PROGRESS.md` para o histórico detalhado de desenvolvimento e decisões tomadas, e `docs/ARCHITECTURE.md` para a arquitetura completa.
@@ -102,7 +102,7 @@ Estrutura geral:
 ```
 
 - **`defaults`**: valores usados por qualquer target que não sobrescrever o campo individualmente.
-- **`targets`**: lista de serviços monitorados. Hoje, `"type": "http"` e `"type": "log"` funcionam de verdade; `"host"` é aceito pela configuração, mas o check falha com um erro claro até esse monitor ser implementado.
+- **`targets`**: lista de serviços monitorados. `"type": "http"`, `"type": "log"` e `"type": "host"` funcionam de verdade.
 
 Campos comuns a todo target:
 
@@ -110,13 +110,13 @@ Campos comuns a todo target:
 |---|---|---|
 | `id` | Sim | Identificador único do target (usado internamente para rastrear estado). |
 | `name` | Sim | Nome legível, usado nas notificações. |
-| `type` | Sim | `"http"` ou `"log"` (funcionais hoje), ou `"host"` (ainda não implementado). |
+| `type` | Sim | `"http"`, `"log"` ou `"host"`. |
 | `enabled` | Sim | `false` desativa o target sem precisar removê-lo do arquivo. |
 | `intervalSeconds` | Não (usa `defaults`) | Intervalo entre checks, em segundos. |
 | `timeoutMs` | Não (usa `defaults`) | Timeout do check, em milissegundos. |
-| `failureThreshold` | Não (usa `defaults`) | Quantas falhas consecutivas até o target virar `DOWN` e disparar um alerta. **Só se aplica a targets `http`** — um target `log` notifica no primeiro match, sempre. |
-| `recoveryThreshold` | Não (usa `defaults`) | Quantos sucessos consecutivos até um target `DOWN` virar `UP` novamente. **Só se aplica a targets `http`** — o conceito de "recuperação" não existe para `log` (um match de log é um evento pontual, não um estado contínuo). |
-| `cooldownSeconds` | Não (usa `defaults`) | Tempo mínimo entre alertas repetidos enquanto o problema persiste: para `http`, entre lembretes de um serviço que continua `DOWN` (a notificação de recuperação não espera esse cooldown); para `log`, entre notificações de novos matches de padrão. |
+| `failureThreshold` | Não (usa `defaults`) | Quantas falhas/excedências consecutivas até o target virar `DOWN` e disparar um alerta. **Só se aplica a targets `http` e `host`** — um target `log` notifica no primeiro match, sempre. |
+| `recoveryThreshold` | Não (usa `defaults`) | Quantos sucessos consecutivos até um target `DOWN` virar `UP` novamente. **Só se aplica a targets `http` e `host`** — o conceito de "recuperação" não existe para `log` (um match de log é um evento pontual, não um estado contínuo). |
+| `cooldownSeconds` | Não (usa `defaults`) | Tempo mínimo entre alertas repetidos enquanto o problema persiste: para `http`/`host`, entre lembretes de um serviço/threshold que continua `DOWN` (a notificação de recuperação não espera esse cooldown); para `log`, entre notificações de novos matches de padrão. |
 | `discordChannelId` | Não | ID do canal do Discord (reservado para uso futuro pelo Bot; não é necessário hoje). |
 | `discordWebhookEnv` | Sim | Nome da variável de ambiente (definida no `.env`) que contém a URL do webhook usado para notificar sobre esse target. |
 
@@ -151,6 +151,22 @@ services:
 ```
 
 E aponte `path` para o caminho **dentro do container** (`/var/log/monitored/app.log` no exemplo acima), não para o caminho no host.
+
+Campos específicos de `"type": "host"`:
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `metricsUrl` | Sim | URL do endpoint `/metrics` de um [Node Exporter](https://github.com/prometheus/node_exporter). Este projeto já inclui um serviço `node-exporter` no `docker-compose.yml`, acessível em `http://node-exporter:9100/metrics` de dentro do container `monitor` (mesma rede do compose). |
+| `diskMountpoint` | Não (padrão `"/"`) | Qual sistema de arquivos monitorar para `diskThresholdPercent`, identificado pelo `mountpoint` reportado pelo Node Exporter. |
+| `cpuThresholdPercent`, `memoryThresholdPercent`, `diskThresholdPercent` | Pelo menos um é obrigatório quando `enabled: true` | Percentual (0–100) acima do qual o target é considerado `DOWN`. Um target `host` sem nenhum threshold definido nunca dispararia alerta, então a configuração é rejeitada. |
+
+Diferente dos outros tipos, o Host Monitor **não lê `/proc`/`/sys` de dentro do próprio container** — isso mostraria métricas do container, não da máquina física. Em vez disso, ele consulta um Node Exporter (que tem acesso real ao host) via HTTP, no mesmo formato de texto usado pelo Prometheus. O uso de CPU é calculado comparando duas leituras sucessivas (é um contador cumulativo desde o boot, não um valor instantâneo) — por isso `cpuPercent` não aparece no primeiro check de um target recém-configurado, só a partir do segundo.
+
+> **Limitação em Docker Desktop (Windows/Mac):** o "host" que o Node Exporter enxerga é a VM interna do Docker Desktop, não a máquina física — então o mountpoint `/` padrão pode não existir na lista (a VM tem seus próprios mountpoints, como `/tmp`, `/var`, `/run`). Para ver quais mountpoints estão disponíveis no seu ambiente antes de configurar `diskMountpoint`, rode (com `docker compose up -d node-exporter` já executado):
+> ```bash
+> docker run --rm --network monitora_default curlimages/curl:latest -s http://node-exporter:9100/metrics | grep node_filesystem_size_bytes
+> ```
+> Em produção (um host Linux real), `/` funciona normalmente.
 
 Configuração inválida é rejeitada no início da execução, com uma mensagem de erro clara indicando o que está errado — o container não vai simplesmente travar silenciosamente.
 
@@ -192,6 +208,6 @@ docs/
 
 ## Limitações conhecidas (MVP)
 
-- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, offset de leitura de logs, etc.). Isso é intencional para o MVP — não há banco de dados.
-- O **Host Monitor** (`type: "host"`) ainda não está implementado; a configuração é aceita, mas o check falha com um erro claro.
+- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, offset de leitura de logs, baseline de CPU, etc.). Isso é intencional para o MVP — não há banco de dados.
+- **Host Monitor** depende de um Node Exporter acessível — sem ele (ou com a URL errada), o target simplesmente falha a cada check com um erro claro, como qualquer outra falha de rede.
 - Não há Bot do Discord nem comando `/status` ainda — as notificações são só via webhook, em uma via.

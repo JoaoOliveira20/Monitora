@@ -161,6 +161,7 @@ test("parseMonitoraConfig accepts a valid host target", () => {
         name: "Application Host",
         type: "host",
         enabled: true,
+        metricsUrl: "http://node-exporter:9100/metrics",
         cpuThresholdPercent: 90,
         discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
       },
@@ -171,6 +172,93 @@ test("parseMonitoraConfig accepts a valid host target", () => {
   assert.equal(target.type, "host");
   if (target.type === "host") {
     assert.equal(target.cpuThresholdPercent, 90);
+    assert.equal(target.metricsUrl, "http://node-exporter:9100/metrics");
+    assert.equal(target.diskMountpoint, "/");
+  }
+});
+
+test("parseMonitoraConfig rejects a host target without metricsUrl", () => {
+  assert.throws(
+    () =>
+      parseMonitoraConfig({
+        version: 1,
+        defaults: validDefaults,
+        targets: [
+          {
+            id: "app-host",
+            name: "Application Host",
+            type: "host",
+            enabled: true,
+            cpuThresholdPercent: 90,
+            discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
+          },
+        ],
+      }),
+    ConfigValidationError
+  );
+});
+
+test("parseMonitoraConfig rejects an enabled host target without any threshold", () => {
+  assert.throws(
+    () =>
+      parseMonitoraConfig({
+        version: 1,
+        defaults: validDefaults,
+        targets: [
+          {
+            id: "app-host",
+            name: "Application Host",
+            type: "host",
+            enabled: true,
+            metricsUrl: "http://node-exporter:9100/metrics",
+            discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
+          },
+        ],
+      }),
+    ConfigValidationError
+  );
+});
+
+test("parseMonitoraConfig accepts a disabled host target without any threshold", () => {
+  const config = parseMonitoraConfig({
+    version: 1,
+    defaults: validDefaults,
+    targets: [
+      {
+        id: "app-host",
+        name: "Application Host",
+        type: "host",
+        enabled: false,
+        metricsUrl: "http://node-exporter:9100/metrics",
+        discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
+      },
+    ],
+  });
+
+  assert.equal(config.targets[0].enabled, false);
+});
+
+test("parseMonitoraConfig accepts a custom diskMountpoint for a host target", () => {
+  const config = parseMonitoraConfig({
+    version: 1,
+    defaults: validDefaults,
+    targets: [
+      {
+        id: "app-host",
+        name: "Application Host",
+        type: "host",
+        enabled: true,
+        metricsUrl: "http://node-exporter:9100/metrics",
+        diskMountpoint: "/data",
+        diskThresholdPercent: 80,
+        discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
+      },
+    ],
+  });
+
+  const [target] = config.targets;
+  if (target.type === "host") {
+    assert.equal(target.diskMountpoint, "/data");
   }
 });
 

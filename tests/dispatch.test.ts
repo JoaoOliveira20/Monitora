@@ -80,9 +80,37 @@ test("checkTarget dispatches a log target to the Log Monitor and keeps its read 
   }
 });
 
-test("checkTarget throws a clear error for a host target, since the Host Monitor does not exist yet", async () => {
-  const target: HostTarget = { ...buildCommon(), type: "host" };
-  const checkTarget = createDispatcher();
+test("checkTarget dispatches a host target to the Host Monitor", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200);
+    res.end("node_memory_MemTotal_bytes 1000\nnode_memory_MemAvailable_bytes 500\n");
+  });
 
-  await assert.rejects(() => checkTarget(target), /host monitor is not implemented yet/);
+  try {
+    const { url } = await new Promise<{ url: string }>((resolvePromise) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (address === null || typeof address === "string") {
+          throw new Error("failed to determine test server address");
+        }
+        resolvePromise({ url: `http://127.0.0.1:${address.port}/metrics` });
+      });
+    });
+
+    const target: HostTarget = {
+      ...buildCommon(),
+      type: "host",
+      metricsUrl: url,
+      diskMountpoint: "/",
+      cpuThresholdPercent: 90,
+    };
+    const checkTarget = createDispatcher();
+
+    const result = await checkTarget(target);
+
+    assert.equal(result.targetId, "target-1");
+    assert.equal((result.metadata as { memoryPercent?: number }).memoryPercent, 50);
+  } finally {
+    await closeServer(server);
+  }
 });

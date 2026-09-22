@@ -43,6 +43,8 @@ export interface LogTarget extends TargetCommon {
 
 export interface HostTarget extends TargetCommon {
   type: "host";
+  metricsUrl: string;
+  diskMountpoint: string;
   cpuThresholdPercent?: number;
   memoryThresholdPercent?: number;
   diskThresholdPercent?: number;
@@ -197,12 +199,34 @@ function parseLogTarget(record: JsonRecord, common: TargetCommon, context: strin
 }
 
 function parseHostTarget(record: JsonRecord, common: TargetCommon, context: string): HostTarget {
+  const metricsUrl = requireString(record.metricsUrl, `${context}.metricsUrl`);
+  requireUrlString(metricsUrl, `${context}.metricsUrl`);
+
+  const diskMountpoint = optionalString(record.diskMountpoint, `${context}.diskMountpoint`) ?? "/";
+
+  const cpuThresholdPercent = optionalPercentage(record.cpuThresholdPercent, `${context}.cpuThresholdPercent`);
+  const memoryThresholdPercent = optionalPercentage(record.memoryThresholdPercent, `${context}.memoryThresholdPercent`);
+  const diskThresholdPercent = optionalPercentage(record.diskThresholdPercent, `${context}.diskThresholdPercent`);
+
+  if (
+    common.enabled &&
+    cpuThresholdPercent === undefined &&
+    memoryThresholdPercent === undefined &&
+    diskThresholdPercent === undefined
+  ) {
+    throw new ConfigValidationError(
+      `${context} must define at least one of "cpuThresholdPercent", "memoryThresholdPercent", or "diskThresholdPercent" when enabled`
+    );
+  }
+
   return {
     ...common,
     type: "host",
-    cpuThresholdPercent: optionalPercentage(record.cpuThresholdPercent, `${context}.cpuThresholdPercent`),
-    memoryThresholdPercent: optionalPercentage(record.memoryThresholdPercent, `${context}.memoryThresholdPercent`),
-    diskThresholdPercent: optionalPercentage(record.diskThresholdPercent, `${context}.diskThresholdPercent`),
+    metricsUrl,
+    diskMountpoint,
+    cpuThresholdPercent,
+    memoryThresholdPercent,
+    diskThresholdPercent,
   };
 }
 

@@ -1,5 +1,5 @@
 import type { Target } from "../config/schema.js";
-import type { AlertEvent, CheckResult, LogCheckMetadata, MonitorState, StateTransition } from "../types/index.js";
+import type { AlertEvent, CheckResult, HostCheckMetadata, LogCheckMetadata, MonitorState, StateTransition } from "../types/index.js";
 
 export function formatDuration(durationMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
@@ -83,6 +83,50 @@ function evaluateLogAlert(target: Target, state: MonitorState, result: CheckResu
   return buildLogMatchEvent(target, result.metadata, now);
 }
 
+function buildHostThresholdEvent(target: Target, metadata: HostCheckMetadata, now: Date): AlertEvent {
+  const parts: string[] = [];
+  if (metadata.cpuPercent !== undefined) {
+    parts.push(`CPU: ${metadata.cpuPercent.toFixed(1)}%`);
+  }
+  if (metadata.memoryPercent !== undefined) {
+    parts.push(`Memory: ${metadata.memoryPercent.toFixed(1)}%`);
+  }
+  if (metadata.diskPercent !== undefined) {
+    parts.push(`Disk: ${metadata.diskPercent.toFixed(1)}%`);
+  }
+
+  return {
+    type: "HOST_THRESHOLD",
+    targetId: target.id,
+    targetName: target.name,
+    occurredAt: now,
+    message: `${target.name} host threshold exceeded (${parts.join(", ")})`,
+    metadata,
+  };
+}
+
+function evaluateHostAlert(
+  target: Target,
+  state: MonitorState,
+  transition: StateTransition | undefined,
+  result: CheckResult<HostCheckMetadata>,
+  now: Date
+): AlertEvent | undefined {
+  if (transition?.newStatus === "DOWN") {
+    return buildHostThresholdEvent(target, result.metadata, now);
+  }
+
+  if (transition?.previousStatus === "DOWN" && transition.newStatus === "UP") {
+    return buildRecoveredEvent(target, transition, now);
+  }
+
+  if (!transition && state.status === "DOWN" && isCooldownElapsed(state.lastAlertAt, target.cooldownSeconds, now)) {
+    return buildHostThresholdEvent(target, result.metadata, now);
+  }
+
+  return undefined;
+}
+
 export function evaluateAlert(
   target: Target,
   state: MonitorState,
@@ -92,6 +136,10 @@ export function evaluateAlert(
 ): AlertEvent | undefined {
   if (target.type === "log") {
     return evaluateLogAlert(target, state, result as CheckResult<LogCheckMetadata>, now);
+  }
+
+  if (target.type === "host") {
+    return evaluateHostAlert(target, state, transition, result as CheckResult<HostCheckMetadata>, now);
   }
 
   if (transition?.newStatus === "DOWN") {

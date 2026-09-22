@@ -63,6 +63,18 @@ function buildLogMatchEvent(overrides: Partial<AlertEvent> = {}): AlertEvent {
   } as AlertEvent;
 }
 
+function buildHostThresholdEvent(overrides: Partial<AlertEvent> = {}): AlertEvent {
+  return {
+    type: "HOST_THRESHOLD",
+    targetId: "target-1",
+    targetName: "Application Host",
+    occurredAt: new Date(2026, 0, 1, 14, 21, 12),
+    message: "Application Host host threshold exceeded (CPU: 94.2%, Memory: 68.1%, Disk: 72.4%)",
+    metadata: { cpuPercent: 94.2, memoryPercent: 68.1, diskPercent: 72.4 },
+    ...overrides,
+  } as AlertEvent;
+}
+
 test("sendAlertToDiscord sends an embed and reports success", async () => {
   process.env.DISCORD_NOTIFIER_TEST_WEBHOOK = FAKE_WEBHOOK_URL;
   const sendMock = mock.method(WebhookClient.prototype, "send", async () => ({}) as never);
@@ -279,6 +291,49 @@ test("sendAlertToDiscord omits Pattern and Line fields on a LOG_MATCH embed when
       embedData.fields?.map((field) => field.name),
       ["Service", "Matches", "Detected at"]
     );
+  } finally {
+    mock.restoreAll();
+    delete process.env.DISCORD_NOTIFIER_TEST_WEBHOOK;
+  }
+});
+
+test("sendAlertToDiscord builds a HOST_THRESHOLD embed with CPU, memory, and disk fields", async () => {
+  process.env.DISCORD_NOTIFIER_TEST_WEBHOOK = FAKE_WEBHOOK_URL;
+  const sendMock = mock.method(WebhookClient.prototype, "send", async () => ({}) as never);
+  mock.method(WebhookClient.prototype, "destroy", () => {});
+
+  try {
+    await sendAlertToDiscord(buildTarget(), buildHostThresholdEvent());
+
+    const payload = sendMock.mock.calls[0].arguments[0] as { embeds: { toJSON(): Record<string, unknown> }[] };
+    const embedData = payload.embeds[0].toJSON() as {
+      title?: string;
+      fields?: { name: string; value: string }[];
+    };
+
+    assert.equal(embedData.title, "🟠 Host threshold exceeded");
+    assert.equal(embedData.fields?.find((field) => field.name === "CPU")?.value, "94.2%");
+    assert.equal(embedData.fields?.find((field) => field.name === "Memory")?.value, "68.1%");
+    assert.equal(embedData.fields?.find((field) => field.name === "Disk")?.value, "72.4%");
+  } finally {
+    mock.restoreAll();
+    delete process.env.DISCORD_NOTIFIER_TEST_WEBHOOK;
+  }
+});
+
+test("sendAlertToDiscord shows unknown for a HOST_THRESHOLD metric that could not be measured", async () => {
+  process.env.DISCORD_NOTIFIER_TEST_WEBHOOK = FAKE_WEBHOOK_URL;
+  const sendMock = mock.method(WebhookClient.prototype, "send", async () => ({}) as never);
+  mock.method(WebhookClient.prototype, "destroy", () => {});
+
+  try {
+    await sendAlertToDiscord(buildTarget(), buildHostThresholdEvent({ metadata: { memoryPercent: 91 } }));
+
+    const payload = sendMock.mock.calls[0].arguments[0] as { embeds: { toJSON(): Record<string, unknown> }[] };
+    const embedData = payload.embeds[0].toJSON() as { fields?: { name: string; value: string }[] };
+
+    assert.equal(embedData.fields?.find((field) => field.name === "CPU")?.value, "unknown");
+    assert.equal(embedData.fields?.find((field) => field.name === "Memory")?.value, "91.0%");
   } finally {
     mock.restoreAll();
     delete process.env.DISCORD_NOTIFIER_TEST_WEBHOOK;
