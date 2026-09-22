@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import type { LogTarget } from "../src/config/schema.js";
-import { LogMonitor } from "../src/monitoring/log-monitor.js";
+import { LogMonitor } from "../src/logs/log-monitor.js";
 
 function buildTarget(overrides: Partial<LogTarget> & { path: string }): LogTarget {
   return {

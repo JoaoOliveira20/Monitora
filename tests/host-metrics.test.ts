@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { test } from "node:test";
 
 import type { HostTarget } from "../src/config/schema.js";
-import { HostMonitor } from "../src/monitoring/host-monitor.js";
+import { HostMonitor } from "../src/system/host-metrics.js";
 
 type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 

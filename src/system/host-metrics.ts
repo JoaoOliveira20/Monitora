@@ -1,9 +1,9 @@
 import { performance } from "node:perf_hooks";
 
 import type { HostTarget } from "../config/schema.js";
+import { describeFetchFailure } from "../monitoring/network-errors.js";
+import { findSample, findSamples, parsePrometheusText, type PrometheusSample } from "../monitoring/prometheus-parser.js";
 import type { CheckResult, HostCheckMetadata } from "../types/index.js";
-import { describeFetchFailure } from "./network-errors.js";
-import { findSample, findSamples, parsePrometheusText, type PrometheusSample } from "./prometheus-parser.js";
 
 export type HostCheckResult = CheckResult<HostCheckMetadata>;
 

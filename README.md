@@ -193,10 +193,13 @@ Todos rodam tanto localmente (se você tiver Node.js 22 instalado) quanto dentro
 
 ```text
 config/targets.json     configuração dos targets monitorados
+logs/                   logs de execução da própria aplicação (não os logs monitorados)
 src/
   config/                carregamento e validação de config/targets.json
   discord/               envio de notificações ao Discord (webhook)
-  monitoring/             scheduler, monitores, state store, alert policy
+  logs/                  Log Monitor (leitura incremental de arquivos de log monitorados)
+  monitoring/             scheduler, HTTP monitor, state store, alert policy, dispatch
+  system/                Host Monitor (métricas via Node Exporter)
   types/                  tipos de domínio compartilhados
   index.ts                ponto de entrada: liga tudo e trata shutdown
 tests/                   testes automatizados (node:test via tsx)
