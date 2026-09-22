@@ -135,6 +135,8 @@ O repositório já vem com um exemplo (desativado) para você copiar e adaptar:
 
 > **Testando localmente sem afetar o seu fork:** se você quiser editar `config/targets.json` com URLs/valores de teste sem correr o risco de commitar isso sem querer, rode `git update-index --skip-worktree config/targets.json` — o Git passa a ignorar mudanças nesse arquivo em qualquer `git add`/`commit`, mesmo em massa. Para reverter: `git update-index --no-skip-worktree config/targets.json`.
 
+> **Mudou o `config/targets.json` com o container já rodando?** Diferente do código em `src/`, esse arquivo é lido só uma vez, na inicialização — editá-lo não reinicia o monitor sozinho. Rode `docker compose restart monitor` (ou `docker compose down && docker compose up`) para a mudança valer.
+
 Campos comuns a todo target:
 
 | Campo | Obrigatório | Descrição |
@@ -213,7 +215,7 @@ Configuração inválida é rejeitada no início da execução, com uma mensagem
 | `docker compose logs monitor` | Mostra os logs do serviço principal (útil com `up -d`). Adicione `-f` para acompanhar em tempo real. |
 | `docker compose down` | Para e remove os containers e a rede. |
 | `docker compose ps` | Mostra quais containers estão rodando. |
-| `docker compose restart monitor` | Reinicia só o serviço principal — necessário depois de mudar o `.env` (o código em `src/` recarrega sozinho em modo dev, mas variáveis de ambiente não). |
+| `docker compose restart monitor` | Reinicia só o serviço principal — necessário depois de mudar o `.env` **ou** o `config/targets.json` (o código em `src/` recarrega sozinho em modo dev, mas variáveis de ambiente e o arquivo de configuração não — ele só é lido uma vez, na inicialização). |
 
 ### npm (rodam tanto localmente, se você tiver Node.js 22, quanto via `docker compose run --rm monitor <script>`)
 
