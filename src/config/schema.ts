@@ -104,12 +104,21 @@ function resolvePositiveIntegerWithDefault(value: unknown, fallback: number, con
   return requirePositiveInteger(value, context);
 }
 
-function optionalPositiveNumber(value: unknown, context: string): number | undefined {
+function optionalPercentage(value: unknown, context: string): number | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== "number" || value <= 0) {
-    throw new ConfigValidationError(`${context} must be a positive number`);
+  if (typeof value !== "number" || value <= 0 || value > 100) {
+    throw new ConfigValidationError(`${context} must be a number greater than 0 and less than or equal to 100`);
+  }
+  return value;
+}
+
+function requireUrlString(value: string, context: string): string {
+  try {
+    new URL(value);
+  } catch {
+    throw new ConfigValidationError(`${context} must be a valid URL`);
   }
   return value;
 }
@@ -166,6 +175,9 @@ function parseHttpTarget(record: JsonRecord, common: TargetCommon, context: stri
   if (url && urlEnv) {
     throw new ConfigValidationError(`${context} must not define both "url" and "urlEnv"`);
   }
+  if (url) {
+    requireUrlString(url, `${context}.url`);
+  }
 
   const method = optionalString(record.method, `${context}.method`) ?? "GET";
 
@@ -188,9 +200,9 @@ function parseHostTarget(record: JsonRecord, common: TargetCommon, context: stri
   return {
     ...common,
     type: "host",
-    cpuThresholdPercent: optionalPositiveNumber(record.cpuThresholdPercent, `${context}.cpuThresholdPercent`),
-    memoryThresholdPercent: optionalPositiveNumber(record.memoryThresholdPercent, `${context}.memoryThresholdPercent`),
-    diskThresholdPercent: optionalPositiveNumber(record.diskThresholdPercent, `${context}.diskThresholdPercent`),
+    cpuThresholdPercent: optionalPercentage(record.cpuThresholdPercent, `${context}.cpuThresholdPercent`),
+    memoryThresholdPercent: optionalPercentage(record.memoryThresholdPercent, `${context}.memoryThresholdPercent`),
+    diskThresholdPercent: optionalPercentage(record.diskThresholdPercent, `${context}.diskThresholdPercent`),
   };
 }
 

@@ -174,6 +174,48 @@ test("parseMonitoraConfig accepts a valid host target", () => {
   }
 });
 
+test("parseMonitoraConfig rejects a host threshold above 100 percent", () => {
+  assert.throws(
+    () =>
+      parseMonitoraConfig({
+        version: 1,
+        defaults: validDefaults,
+        targets: [
+          {
+            id: "app-host",
+            name: "Application Host",
+            type: "host",
+            enabled: true,
+            cpuThresholdPercent: 500,
+            discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
+          },
+        ],
+      }),
+    ConfigValidationError
+  );
+});
+
+test("parseMonitoraConfig rejects an http target with a malformed url", () => {
+  assert.throws(
+    () =>
+      parseMonitoraConfig({
+        version: 1,
+        defaults: validDefaults,
+        targets: [
+          {
+            id: "example-site",
+            name: "Example Site",
+            type: "http",
+            enabled: true,
+            url: "not-a-url-at-all",
+            discordWebhookEnv: "DISCORD_WEBHOOK_MAIN",
+          },
+        ],
+      }),
+    ConfigValidationError
+  );
+});
+
 test("parseMonitoraConfig rejects an unknown target type", () => {
   assert.throws(
     () =>
