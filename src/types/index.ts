@@ -42,11 +42,21 @@ export interface RecoveredAlertMetadata {
   downtimeMs?: number;
 }
 
-export interface AlertEvent {
-  type: AlertEventType;
+interface AlertEventCommon {
   targetId: string;
   targetName: string;
   occurredAt: Date;
   message: string;
-  metadata: DownAlertMetadata | RecoveredAlertMetadata;
 }
+
+export interface DownAlertEvent extends AlertEventCommon {
+  type: "DOWN";
+  metadata: DownAlertMetadata;
+}
+
+export interface RecoveredAlertEvent extends AlertEventCommon {
+  type: "RECOVERED";
+  metadata: RecoveredAlertMetadata;
+}
+
+export type AlertEvent = DownAlertEvent | RecoveredAlertEvent;

@@ -2,11 +2,11 @@
 
 ## Current Status
 
-Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor, Scheduler, State Store e Alert Policy implementados e testados — incluindo dois testes de integração de ponta a ponta rodados manualmente (scripts `tsx` descartáveis, não commitados) que confirmaram Config → Scheduler → HTTP Monitor → State Store → Alert Policy funcionando juntos sem atrito de tipos. Nada ainda está "ligado" em `src/index.ts` (não há um processo real rodando isso continuamente). Log/Host Monitor e Discord Notifier ainda não existem.
+Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor, Scheduler, State Store, Alert Policy e Discord Notifier implementados e testados. O núcleo completo do fluxo documentado (`Configuração → Scheduler → Monitor → CheckResult → State Store → Alert Policy → AlertEvent → Discord Notifier`) já existe e foi validado em pedaços, mas nada ainda está "ligado" em `src/index.ts` (não há um processo real rodando isso continuamente, nem enviando notificações de verdade). Log/Host Monitor e Discord Bot (`/status`) ainda não existem.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. A implementação da Alert Policy foi concluída, precedida de uma revisão completa de tudo implementado até aqui.
+Nenhuma tarefa em execução no momento. A implementação do Discord Notifier foi concluída.
 
 ## Completed
 
@@ -51,6 +51,11 @@ Nenhuma tarefa em execução no momento. A implementação da Alert Policy foi c
   - Quem chama `stateStore.recordAlertSent()` e quando (antes ou depois de confirmar entrega no Discord) é decisão do futuro orquestrador (`src/index.ts`), não da Alert Policy — mantém a função de decisão pura e testável.
   - 11 testes (`tests/alert-policy.test.ts`): `formatDuration` em 3 formatos, DOWN imediato em ambas as transições de origem, mensagem/metadata incluindo `lastError`, RECOVERED com downtime formatado e ignorando cooldown, nenhum alerta sem transição enquanto UP, reminder bloqueado antes do cooldown, reminder liberado após o cooldown, reminder liberado quando `lastAlertAt` nunca foi setado.
   - Testado manualmente um incidente completo de ponta a ponta (script `tsx` descartável, não commitado): 2 falhas → `DOWN` imediato → silêncio dentro do cooldown → reminder `DOWN` após 900s → `RECOVERED` com "30m 0s" de downtime contado desde a primeira falha, não desde a confirmação. Comportamento exatamente como esperado.
+- **`AlertEvent` fortalecido para discriminated union real** (`src/types/index.ts`): antes `metadata: DownAlertMetadata | RecoveredAlertMetadata` não estava amarrado ao campo `type`, exigindo type assertions em quem consumisse o evento. Agora `DownAlertEvent`/`RecoveredAlertEvent` são interfaces próprias unidas em `AlertEvent`, e o TypeScript faz o narrowing automático (`if (event.type === "DOWN") { event.metadata.consecutiveFailures }` sem assertion). `alert-policy.ts` não precisou de nenhuma mudança — já retornava exatamente essa shape.
+- **Discord Notifier** (`src/discord/notifier.ts`): `sendAlertToDiscord(target, event): Promise<{ success: boolean; error?: string }>`. Resolve o webhook via `target.discordWebhookEnv` (a resolução que tínhamos adiado desde a etapa do Config Loader), monta o embed com `discord.js` `EmbedBuilder` seguindo o formato documentado em `docs/PROJECT_BLUEPRINT.md` seção 19 (🔴/🟢, campos Service/Failures/Detected at/Error para DOWN, Service/Downtime/Recovered at para RECOVERED), envia via `WebhookClient`, e nunca decide se deve alertar (isso já foi decidido pela Alert Policy).
+  - **Achado crítico de segurança durante a investigação** (script `tsx` descartável contra o domínio real do Discord, com um webhook inventado que obviamente não existe — só para inspecionar a *forma* do erro, sem usar nenhuma credencial real): o erro `DiscordAPIError` lançado pelo `discord.js` tem um campo `.url` que expõe **a URL completa do webhook, token incluído**, em texto puro. Logar o erro ingenuamente (`console.error(error)` ou até `error.message` em alguns casos) vazaria o token. `describeDeliveryFailure()` extrai só `.status`/`.code` (seguros) e nunca toca em `.url` ou no objeto de erro bruto. Testado explicitamente (`sendAlertToDiscord reports a Discord API failure without leaking the webhook URL`) com regex negativo confirmando que o token fake de 68 caracteres não aparece na mensagem de erro retornada.
+  - Testes usam `node:test`'s `mock.method(WebhookClient.prototype, "send", ...)` — mock nativo, sem dependência extra — em vez de um Discord real (regra explícita do CLAUDE.md). Precisei descobrir empiricamente o formato exigido pela validação de URL do `discord.js` (`id` com 17-19 dígitos, `token` com exatamente 68 caracteres `[\w-]`, lido do código-fonte instalado em `node_modules/discord.js/src/util/Util.js`) para conseguir construir uma URL de webhook fake que passasse pela validação e chegasse até o mock.
+  - 9 testes (`tests/discord-notifier.test.ts`): envio bem-sucedido, `discordWebhookEnv` ausente (falha sem tentar enviar), falha da API do Discord sem vazar a URL, fallback genérico para erro não reconhecido, `client.destroy()` sempre chamado (inclusive em erro), conteúdo do embed DOWN (com e sem `lastError`), conteúdo do embed RECOVERED (com e sem `downtimeMs`).
 
 ## In Progress
 
@@ -58,8 +63,8 @@ Nenhuma tarefa em execução no momento. A implementação da Alert Policy foi c
 
 ## Next Steps
 
-- Implementar o `Discord Notifier` (`src/discord/notifier.ts`): resolve o webhook (`discordWebhookEnv`), monta o embed a partir do `AlertEvent` (formato documentado em `docs/PROJECT_BLUEPRINT.md` seção 19 — cores/emoji por tipo, campos estruturados), envia via `discord.js` `WebhookClient`, trata falha de entrega sem corromper o estado do monitor. Só depois disso decidir quando chamar `stateStore.recordAlertSent()` (antes ou depois da confirmação de entrega — ver nota em "Technical Notes").
-- Só então montar o "cabo" em `src/index.ts`: carregar a config, criar o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado — `log`/`host` devem lançar erro claro), ligar ao `StateStore`, à `evaluateAlert` e ao Discord Notifier. Hoje nada disso está conectado ainda.
+- Montar o "cabo" em `src/index.ts`: carregar a config, criar o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado — `log`/`host` devem lançar erro claro), ligar ao `StateStore`, à `evaluateAlert` e ao `sendAlertToDiscord`, chamando `stateStore.recordAlertSent()` só depois que `sendAlertToDiscord` confirmar sucesso (ver decisão registrada em "Technical Notes"). Hoje nenhuma dessas peças está conectada — todas existem isoladas e testadas.
+- Depois disso, considerar o Discord Bot (`/status`, lê o `StateStore` sem rodar healthchecks) — não é prioridade imediata, mencionado aqui só para não esquecer que faz parte do roadmap documentado.
 - Em algum ponto (provavelmente depois do State Store, antes do Discord Notifier), montar o "cabo" em `src/index.ts` que carrega a config, cria o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado) e liga ao State Store — hoje nada disso está conectado ainda.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
@@ -101,6 +106,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
 - Implementado o State Store (`src/monitoring/state-store.ts`) e os tipos `TargetStatus`/`MonitorState`/`StateTransition` (`src/types/index.ts`), com 13 testes novos cobrindo a máquina de estados, thresholds, flapping, downtime e isolamento entre targets.
 - Revisão completa de tudo implementado até então, incluindo dois testes de integração de ponta a ponta (scripts `tsx` descartáveis): (1) Config → Scheduler → HTTP Monitor → State Store rodando juntos contra um servidor HTTP local, confirmando `UNKNOWN → UP → DOWN → UP` com downtime correto; (2) mais tarde, depois da Alert Policy, um incidente completo com reminder de cooldown. Nenhum bug novo encontrado no código já revisado individualmente — o valor da revisão foi confirmar que as peças se encaixam sem atrito de tipos.
 - Implementado o método `StateStore.recordAlertSent()` e a Alert Policy (`src/monitoring/alert-policy.ts`, função pura `evaluateAlert`), com os tipos `AlertEvent`/`DownAlertMetadata`/`RecoveredAlertMetadata` (`src/types/index.ts`). 13 testes novos (11 da Alert Policy + 2 do `recordAlertSent`).
+- Fortalecido `AlertEvent` para discriminated union real (`type` amarrado a `metadata` sem precisar de assertions). Implementado o Discord Notifier (`src/discord/notifier.ts`, `sendAlertToDiscord`), com 9 testes novos usando o mock nativo do `node:test` (sem Discord real). Durante a implementação, uma investigação empírica (script `tsx` descartável contra o domínio real do Discord, sem credenciais reais) revelou que o erro `DiscordAPIError` do `discord.js` expõe a URL completa do webhook — token incluído — no campo `.url`; o notifier foi escrito para nunca tocar nesse campo, e isso está coberto por um teste dedicado com regex negativo.
 
 ## Validation
 
@@ -117,9 +123,10 @@ npm run build
 # OK — tsc -p tsconfig.build.json gerou dist/index.js.
 
 npm test
-# OK — 67 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
+# OK — 76 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
 # 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts,
-# 15 de src/monitoring/state-store.ts, 11 de src/monitoring/alert-policy.ts.
+# 15 de src/monitoring/state-store.ts, 11 de src/monitoring/alert-policy.ts, 9 de src/discord/notifier.ts
+# (mock nativo do node:test, sem Discord real).
 # Suíte completa rodada 3x seguidas para checar flakiness de timing nos testes do Scheduler — estável nas 3.
 
 npm start
@@ -184,6 +191,11 @@ npx tsx <script descartável>
 
 docker compose build && docker build --target production -t monitora-production .
 # OK — ambas as imagens reconstruídas com src/monitoring/alert-policy.ts novo.
+
+# --- após implementar o Discord Notifier ---
+
+docker compose build && docker build --target production -t monitora-production .
+# OK — ambas as imagens reconstruídas com src/discord/notifier.ts novo.
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
