@@ -1,8 +1,22 @@
 # Monitora
 
-Monitora é uma pequena plataforma de monitoramento configurável, que verifica serviços web e infraestrutura e envia alertas para o Discord quando algo muda de estado.
+Monitora é uma pequena plataforma de monitoramento configurável: ela verifica serviços web, arquivos de log e métricas de host (CPU/RAM/disco), e envia alertas para o Discord quando algo muda de estado — tudo rodando via Docker, sem precisar de Node.js instalado no seu computador.
 
-O objetivo é simples: monitorar múltiplos serviços (sites, APIs) sem precisar alterar código a cada novo serviço adicionado — tudo é configurado em um único arquivo JSON. Todo o projeto roda via Docker; o host só precisa ter Docker e Git instalados.
+O objetivo é simples: monitorar múltiplos serviços sem precisar alterar código a cada novo serviço adicionado — tudo é configurado em um único arquivo JSON (`config/targets.json`).
+
+## Sumário
+
+- [Status atual do projeto](#status-atual-do-projeto)
+- [Requisitos](#requisitos)
+- [Como rodar](#como-rodar)
+- [Configuração](#configuração)
+  - [`.env`](#env)
+  - [Configurando o Bot do Discord](#configurando-o-bot-do-discord)
+  - [`config/targets.json`](#configtargetsjson)
+- [Comandos](#comandos)
+- [Segurança](#segurança)
+- [Estrutura do projeto](#estrutura-do-projeto)
+- [Limitações conhecidas](#limitações-conhecidas-mvp)
 
 ## Status atual do projeto
 
@@ -34,24 +48,22 @@ cd Monitora
 cp .env.example .env
 ```
 
-O `config/targets.json` do repositório vem com a lista de targets vazia — edite-o (junto com o `.env`) conforme a seção [Configuração](#configuração) abaixo. Com pelo menos um target habilitado apontando para um webhook do Discord válido, o monitor já funciona. Depois:
+O `config/targets.json` do repositório vem com um target de exemplo **desativado** (`"enabled": false`, apontando para `https://example.com`) — edite-o (junto com o `.env`) conforme a seção [Configuração](#configuração) abaixo antes de usar de verdade. Depois:
 
 ```bash
 docker compose build
 docker compose up
 ```
 
-O container fica rodando continuamente, verificando os targets configurados nos intervalos definidos. Para parar:
+O container fica rodando continuamente, verificando os targets configurados nos intervalos definidos. Para parar, `Ctrl+C` no terminal onde `docker compose up` está rodando (o processo trata `SIGTERM`/`SIGINT` e encerra de forma limpa), ou em outro terminal:
 
 ```bash
 docker compose down
 ```
 
-Ou, em outro terminal, `Ctrl+C` no terminal onde `docker compose up` está rodando — o processo trata `SIGTERM`/`SIGINT` e encerra de forma limpa.
-
 ## Configuração
 
-Dois arquivos precisam ser configurados antes do monitor ser útil de verdade: `.env` e `config/targets.json`. Nenhum dos dois deve conter segredos reais commitados no Git — o `.env` já está no `.gitignore`.
+Dois arquivos precisam ser configurados antes do monitor ser útil de verdade: `.env` e `config/targets.json`. **Nenhum dos dois deve conter segredos reais commitados no Git** — o `.env` já está no `.gitignore`; o `config/targets.json` normalmente não tem segredos (as URLs de webhook ficam no `.env`), mas se você editar o seu localmente para testes e não quiser que essas mudanças vão para o seu fork, veja a dica no final desta seção.
 
 ### `.env`
 
@@ -60,12 +72,12 @@ Copie `.env.example` para `.env` e preencha:
 | Variável | Obrigatória? | Descrição |
 |---|---|---|
 | `NODE_ENV` | Não | `development` ou `production`. Já vem preenchida com `development`; o `Dockerfile` força `production` na imagem de produção. |
-| `MONITOR_NAME` | Não | Nome exibido no log de inicialização. Se vazia, usa `"Monitora"`. |
-| `DISCORD_WEBHOOK_MAIN` | Sim, se algum target usar esse nome | **Exemplo** de variável referenciada por um target no `config/targets.json` (campo `discordWebhookEnv`). O nome não é fixo — cada target aponta para a env var que quiser (veja abaixo). O valor é a URL completa do webhook do Discord (`Configurações do Canal → Integrações → Webhooks`). |
+| `MONITOR_NAME` | Não | Nome exibido no log de inicialização e no `/status`. Se vazia, usa `"Monitora"`. |
+| `DISCORD_WEBHOOK_MAIN` | Sim, se algum target usar esse nome | **Exemplo** de variável referenciada por um target no `config/targets.json` (campo `discordWebhookEnv`). O nome não é fixo — cada target aponta para a env var que quiser (veja abaixo). O valor é a URL completa do webhook do Discord (`Configurações do Canal → Integrações → Webhooks → Novo Webhook → Copiar URL`). |
 | `DISCORD_WEBHOOK_URL` | Não | Reservada, não usada por nenhum código hoje — pode deixar em branco. |
 | `DISCORD_TOKEN` | Não (só para o Bot `/status`) | Token do Bot do Discord. Sem ela (ou sem `DISCORD_CLIENT_ID`), o Monitora roda normalmente, só sem o comando `/status`. Veja [Configurando o Bot do Discord](#configurando-o-bot-do-discord) abaixo. |
 | `DISCORD_CLIENT_ID` | Não (só para o Bot `/status`) | ID da aplicação do Discord (necessário para registrar o slash command). |
-| `DISCORD_GUILD_ID` | Não | Se definida, o `/status` é registrado só nesse servidor (aparece em segundos). Se vazia, é registrado globalmente (pode levar até ~1h para propagar em todos os servidores). Recomendado preencher durante o desenvolvimento/testes. |
+| `DISCORD_GUILD_ID` | Não | Se definida, o `/status` é registrado só nesse servidor (aparece em segundos). Se vazia, é registrado globalmente (pode levar até ~1h para propagar). O bot te ajuda a descobrir esse ID — veja o passo a passo abaixo. |
 
 Você pode adicionar quantas variáveis `DISCORD_WEBHOOK_*` quiser, com o nome que preferir — o que importa é que o nome bata com o `discordWebhookEnv` do target correspondente em `config/targets.json`. Vários targets podem compartilhar o mesmo webhook.
 
@@ -73,22 +85,27 @@ Você pode adicionar quantas variáveis `DISCORD_WEBHOOK_*` quiser, com o nome q
 
 ### Configurando o Bot do Discord
 
-O comando `/status` é opcional — sem ele, o Monitora continua enviando alertas via webhook normalmente. Para habilitar:
+O comando `/status` é opcional — sem ele, o Monitora continua enviando alertas via webhook normalmente. Você usa **sua própria conta** do Discord para criar e gerenciar o bot; não é preciso (nem dá) fazer login como o bot em si.
 
-1. Vá em [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application**.
-2. Em **Bot**, clique em **Reset Token** para gerar um token — copie e cole em `DISCORD_TOKEN` no `.env`. **Trate esse token como uma senha**: quem o tiver pode controlar o bot.
-3. Em **General Information**, copie o **Application ID** para `DISCORD_CLIENT_ID`.
-4. Em **OAuth2 → URL Generator**, marque os escopos `bot` e `applications.commands` (nenhuma permissão de bot especial é necessária — `/status` só lê o estado em memória). Abra a URL gerada e convide o bot para o seu servidor.
-5. `docker compose up` (mesmo sem `DISCORD_GUILD_ID` preenchida ainda) — o log mostra `Discord bot connected, /status command registered` e, logo em seguida, `Connected to N guild(s): <nome do servidor> (<id>)`. **Copie esse ID** direto do log e cole em `DISCORD_GUILD_ID` no `.env` — mais fácil do que caçar nas configurações do Discord.
-6. Reinicie (`docker compose up` de novo — `.env` não recarrega sozinho como o código faz). Agora o `/status` é registrado só no seu servidor e aparece em segundos, em vez de esperar a propagação global (que pode levar até ~1h).
+1. Vá em [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → dê um nome.
+2. No menu **Bot** (lateral esquerda) → **Reset Token** → copie o token gerado para `DISCORD_TOKEN` no `.env`. **Trate esse token como uma senha**: quem o tiver pode controlar o bot.
+3. No menu **General Information** → copie o **Application ID** para `DISCORD_CLIENT_ID`.
+4. No menu **OAuth2 → URL Generator** → marque os escopos `bot` e `applications.commands` (nenhuma permissão de bot especial é necessária — `/status` só lê o estado em memória, não precisa de acesso a mensagens nem nada além de responder). Copie a URL gerada, abra no navegador, e escolha o servidor onde quer testar.
+5. `docker compose up` (mesmo sem `DISCORD_GUILD_ID` preenchida ainda) — procure no log:
+   ```
+   Discord bot connected, /status command registered
+   Connected to 1 guild(s): Nome do Seu Servidor (123456789012345678)
+   ```
+   **Copie esse ID** (o número entre parênteses) direto do log — é o jeito mais fácil, sem precisar mexer nas configurações do Discord.
+6. Cole esse ID em `DISCORD_GUILD_ID` no `.env`, e rode `docker compose up` de novo (`.env` não recarrega sozinho como o código faz). Agora o `/status` é registrado só no seu servidor e aparece em segundos.
 
-**Sem `DISCORD_GUILD_ID`, o comando ainda funciona, só demora a aparecer na lista de autocomplete do Discord** — não é um erro, é só o tempo normal de propagação de comandos globais. Se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` faltarem ou forem inválidos, o Monitora loga isso claramente e continua rodando sem o bot — também não é um erro fatal.
+**Sem `DISCORD_GUILD_ID`, o comando ainda funciona**, só demora a aparecer no autocomplete do Discord (até ~1h, é o tempo normal de propagação de um comando global) — não é um erro. Se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` faltarem ou forem inválidos, o Monitora loga isso claramente e continua rodando sem o bot — também não é um erro fatal.
 
 ### `config/targets.json`
 
 Define **o que** deve ser monitorado e **como**. Adicionar ou remover um serviço não exige nenhuma alteração de código — só editar este arquivo.
 
-Estrutura geral:
+O repositório já vem com um exemplo (desativado) para você copiar e adaptar:
 
 ```json
 {
@@ -105,9 +122,8 @@ Estrutura geral:
       "id": "example-site",
       "name": "Example Site",
       "type": "http",
-      "enabled": true,
+      "enabled": false,
       "url": "https://example.com",
-      "method": "GET",
       "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
     }
   ]
@@ -117,12 +133,14 @@ Estrutura geral:
 - **`defaults`**: valores usados por qualquer target que não sobrescrever o campo individualmente.
 - **`targets`**: lista de serviços monitorados. `"type": "http"`, `"type": "log"` e `"type": "host"` funcionam de verdade.
 
+> **Testando localmente sem afetar o seu fork:** se você quiser editar `config/targets.json` com URLs/valores de teste sem correr o risco de commitar isso sem querer, rode `git update-index --skip-worktree config/targets.json` — o Git passa a ignorar mudanças nesse arquivo em qualquer `git add`/`commit`, mesmo em massa. Para reverter: `git update-index --no-skip-worktree config/targets.json`.
+
 Campos comuns a todo target:
 
 | Campo | Obrigatório | Descrição |
 |---|---|---|
 | `id` | Sim | Identificador único do target (usado internamente para rastrear estado). |
-| `name` | Sim | Nome legível, usado nas notificações. |
+| `name` | Sim | Nome legível, usado nas notificações e no `/status`. |
 | `type` | Sim | `"http"`, `"log"` ou `"host"`. |
 | `enabled` | Sim | `false` desativa o target sem precisar removê-lo do arquivo. |
 | `intervalSeconds` | Não (usa `defaults`) | Intervalo entre checks, em segundos. |
@@ -183,9 +201,21 @@ Diferente dos outros tipos, o Host Monitor **não lê `/proc`/`/sys` de dentro d
 
 Configuração inválida é rejeitada no início da execução, com uma mensagem de erro clara indicando o que está errado — o container não vai simplesmente travar silenciosamente.
 
-## Scripts disponíveis
+## Comandos
 
-Todos rodam tanto localmente (se você tiver Node.js 22 instalado) quanto dentro do container via `docker compose run --rm monitor <script>`:
+### Docker (uso do dia a dia)
+
+| Comando | O que faz |
+|---|---|
+| `docker compose build` | Reconstrói a imagem — rode depois de mudar código ou o `Dockerfile`. |
+| `docker compose up` | Sobe o Monitora (+ Node Exporter) e mostra os logs no terminal. `Ctrl+C` para parar. |
+| `docker compose up -d` | Igual, mas em segundo plano (não prende o terminal). |
+| `docker compose logs monitor` | Mostra os logs do serviço principal (útil com `up -d`). Adicione `-f` para acompanhar em tempo real. |
+| `docker compose down` | Para e remove os containers e a rede. |
+| `docker compose ps` | Mostra quais containers estão rodando. |
+| `docker compose restart monitor` | Reinicia só o serviço principal — necessário depois de mudar o `.env` (o código em `src/` recarrega sozinho em modo dev, mas variáveis de ambiente não). |
+
+### npm (rodam tanto localmente, se você tiver Node.js 22, quanto via `docker compose run --rm monitor <script>`)
 
 | Comando | O que faz |
 |---|---|

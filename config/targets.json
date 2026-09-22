@@ -7,5 +7,14 @@
     "recoveryThreshold": 1,
     "cooldownSeconds": 900
   },
-  "targets": []
+  "targets": [
+    {
+      "id": "example-site",
+      "name": "Example Site",
+      "type": "http",
+      "enabled": false,
+      "url": "https://example.com",
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    }
+  ]
 }
