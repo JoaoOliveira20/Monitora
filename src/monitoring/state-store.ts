@@ -42,6 +42,14 @@ export class StateStore {
     return [...this.states.values()];
   }
 
+  recordAlertSent(targetId: string, sentAt: Date): void {
+    const state = this.states.get(targetId);
+    if (!state) {
+      return;
+    }
+    this.states.set(targetId, { ...state, lastAlertAt: sentAt });
+  }
+
   recordCheckResult(target: Target, result: CheckResult): StateTransition | undefined {
     const previous = this.states.get(target.id) ?? createInitialState(target.id);
     const previousStatus = previous.status;

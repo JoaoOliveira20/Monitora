@@ -2,11 +2,11 @@
 
 ## Current Status
 
-Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor, Scheduler e State Store implementados e testados. Nada ainda está "ligado" em `src/index.ts` (não há um processo de fato rodando o ciclo completo config → scheduler → monitor → state store). Log/Host Monitor, Alert Policy e Discord Notifier ainda não existem.
+Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor, Scheduler, State Store e Alert Policy implementados e testados — incluindo dois testes de integração de ponta a ponta rodados manualmente (scripts `tsx` descartáveis, não commitados) que confirmaram Config → Scheduler → HTTP Monitor → State Store → Alert Policy funcionando juntos sem atrito de tipos. Nada ainda está "ligado" em `src/index.ts` (não há um processo real rodando isso continuamente). Log/Host Monitor e Discord Notifier ainda não existem.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. A implementação do State Store foi concluída.
+Nenhuma tarefa em execução no momento. A implementação da Alert Policy foi concluída, precedida de uma revisão completa de tudo implementado até aqui.
 
 ## Completed
 
@@ -42,6 +42,15 @@ Nenhuma tarefa em execução no momento. A implementação do State Store foi co
   3. `firstFailureAt`/downtime são contados desde a **primeira falha da sequência consecutiva atual**, não desde o momento em que `DOWN` foi oficialmente confirmado — dá um downtime mais preciso do ponto de vista do usuário final.
   - `lastAlertAt` existe no `MonitorState` (parte do domínio documentado), mas nada escreve nele ainda — isso é responsabilidade da Alert Policy (próxima etapa), que ainda não existe. Não foi criado nenhum método especulativo pra isso.
   - 13 testes (`tests/state-store.test.ts`): transições UNKNOWN→UP, UNKNOWN→DOWN (com failureThreshold), UP→DOWN, DOWN→UP (com recoveryThreshold), reset de contador de falha/sucesso, **flapping** (uma recuperação parcial interrompida por nova falha reseta o contador de sucessos), downtime calculado desde a primeira falha (não desde a confirmação), `firstFailureAt` fixo através de múltiplas falhas mas `lastFailureAt` avançando, `lastSuccessAt`/`lastFailureAt` como históricos independentes, isolamento entre targets.
+  - `recordAlertSent(targetId, sentAt)` adicionado depois (junto com a Alert Policy): atualiza `lastAlertAt` no `MonitorState`; no-op se o target não tem estado registrado. 2 testes novos.
+- **Alert Policy** (`src/monitoring/alert-policy.ts`) e os tipos `AlertEvent`/`AlertEventType`/`DownAlertMetadata`/`RecoveredAlertMetadata` em `src/types/index.ts`. Função pura `evaluateAlert(target, state, transition, now): AlertEvent | undefined` — sem estado próprio, sem I/O, não conhece Discord. Regras implementadas, lendo a doc com cuidado porque "thresholds/cooldown" na seção 6 da arquitetura é atribuído à Alert Policy mas a *máquina de estados* (seção 10) já vive no State Store — a interpretação adotada foi: o State Store decide QUANDO o status muda; a Alert Policy decide SE/QUANDO isso vira uma notificação:
+  1. Transição para `DOWN` (de `UP` ou `UNKNOWN`) sempre gera um evento `DOWN` — o primeiro alerta de um incidente nunca é bloqueado por cooldown.
+  2. Transição `DOWN → UP` sempre gera um evento `RECOVERED`, também ignorando cooldown ("Recovery notifications are independent from the DOWN cooldown", `docs/ARCHITECTURE.md` seção 13).
+  3. Sem transição (status já era o mesmo) mas ainda `DOWN`: gera um "reminder" (`DOWN` de novo) somente se `cooldownSeconds` já passou desde `lastAlertAt` (ou se `lastAlertAt` nunca foi setado — cenário defensivo: o alerta anterior foi decidido mas o envio pode ter falhado antes de chamar `recordAlertSent`, não deveria esperar o cooldown inteiro de novo).
+  - `formatDuration(ms)` exportada separadamente (função pura, ex.: `90000 → "1m 30s"`) — usada para formatar o downtime na mensagem do evento `RECOVERED`; reutilizável pelo futuro Discord Notifier.
+  - Quem chama `stateStore.recordAlertSent()` e quando (antes ou depois de confirmar entrega no Discord) é decisão do futuro orquestrador (`src/index.ts`), não da Alert Policy — mantém a função de decisão pura e testável.
+  - 11 testes (`tests/alert-policy.test.ts`): `formatDuration` em 3 formatos, DOWN imediato em ambas as transições de origem, mensagem/metadata incluindo `lastError`, RECOVERED com downtime formatado e ignorando cooldown, nenhum alerta sem transição enquanto UP, reminder bloqueado antes do cooldown, reminder liberado após o cooldown, reminder liberado quando `lastAlertAt` nunca foi setado.
+  - Testado manualmente um incidente completo de ponta a ponta (script `tsx` descartável, não commitado): 2 falhas → `DOWN` imediato → silêncio dentro do cooldown → reminder `DOWN` após 900s → `RECOVERED` com "30m 0s" de downtime contado desde a primeira falha, não desde a confirmação. Comportamento exatamente como esperado.
 
 ## In Progress
 
@@ -49,8 +58,8 @@ Nenhuma tarefa em execução no momento. A implementação do State Store foi co
 
 ## Next Steps
 
-- Implementar a `Alert Policy` (`src/discord/` ou `src/monitoring/`? — decidir na hora, ver `docs/ARCHITECTURE.md` seção 13): consome `StateTransition` do State Store, decide se deve gerar um `AlertEvent` (DOWN, RECOVERED), aplica cooldown/throttling (`cooldownSeconds`) e escreve em `lastAlertAt` no `MonitorState` (primeiro consumidor real desse campo).
-- Depois, o `Discord Notifier` com o envio real de embeds (webhook).
+- Implementar o `Discord Notifier` (`src/discord/notifier.ts`): resolve o webhook (`discordWebhookEnv`), monta o embed a partir do `AlertEvent` (formato documentado em `docs/PROJECT_BLUEPRINT.md` seção 19 — cores/emoji por tipo, campos estruturados), envia via `discord.js` `WebhookClient`, trata falha de entrega sem corromper o estado do monitor. Só depois disso decidir quando chamar `stateStore.recordAlertSent()` (antes ou depois da confirmação de entrega — ver nota em "Technical Notes").
+- Só então montar o "cabo" em `src/index.ts`: carregar a config, criar o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado — `log`/`host` devem lançar erro claro), ligar ao `StateStore`, à `evaluateAlert` e ao Discord Notifier. Hoje nada disso está conectado ainda.
 - Em algum ponto (provavelmente depois do State Store, antes do Discord Notifier), montar o "cabo" em `src/index.ts` que carrega a config, cria o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado) e liga ao State Store — hoje nada disso está conectado ainda.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
@@ -71,6 +80,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
 - Ao testar a categorização de erro de conexão, o primeiro teste usava `http://127.0.0.1:1` (porta 1) esperando `ECONNREFUSED`, mas o `fetch`/undici bloqueia portas "inseguras" (a mesma lista de "forbidden ports" dos browsers) antes mesmo de tentar conectar, lançando `cause: Error("bad port")` sem `.code`. Isso caía no fallback genérico `"request failed"` — funcionalmente correto (`success: false`), mas a categorização ficava errada. Corrigido usando uma porta alta válida (`59999`) sem nada escutando, que gera o `ECONNREFUSED` real esperado. Documentado aqui porque não é óbvio e pode confundir uma sessão futura mexendo nesses testes.
 - O `Scheduler` trabalha diretamente com o tipo `Target` (união `HttpTarget | LogTarget | HostTarget` de `src/config/schema.ts`) em vez de ser genérico (`<T>`). Decisão consciente: o Scheduler sempre vai lidar com targets vindos da configuração do Monitora, não há requisito real para generalizar além disso — generics aqui seriam abstração sem benefício concreto (regra do CLAUDE.md contra abstração prematura).
 - `Scheduler.stop()` usa `AbortController.abort()` para interromper apenas a espera (`delay` entre execuções), nunca o check em andamento — abortar um check no meio poderia deixar o HTTP Monitor (ou um monitor futuro) em estado inconsistente. Isso é o que permite "parar novos checks; aguardar operações em andamento quando possível" (regra de graceful shutdown) sem sacrificar a resposta rápida do `stop()`.
+- Decisão em aberto para quando o Discord Notifier existir: `recordAlertSent()` deve ser chamado **depois** que o Notifier confirma que o envio ao Discord teve sucesso, não antes (otimista). Motivo: se o envio falhar (rede, Discord fora do ar, webhook inválido) e já tivéssemos marcado `lastAlertAt`, o sistema esperaria o `cooldownSeconds` inteiro antes de tentar notificar de novo, mesmo que a falha tenha sido transitória — indo contra "Discord delivery failures must be handled... without corrupting monitor state" (`docs/ARCHITECTURE.md` seção 21). A Alert Policy não decide isso sozinha (é pura, sem acesso ao StateStore) — fica para o orquestrador em `src/index.ts`.
 - Limitação conhecida e aceita por ora: um host target sem nenhum dos três campos de threshold (`cpuThresholdPercent`, `memoryThresholdPercent`, `diskThresholdPercent`) é aceito pelo schema, mas nunca vai gerar alerta (não há threshold "global" de host implementado, só os campos por-target). Como o Host Monitor ainda não existe, o impacto é zero por ora; reavaliar quando o Host Monitor for implementado — pode fazer sentido exigir pelo menos um threshold definido quando `enabled: true`.
 - O ambiente de validação local tinha Node.js, npm e Docker instalados no host (usados para gerar `package-lock.json` e rodar as validações mais rápido), mas o projeto continua desenhado para não exigir Node/npm no host — tudo roda também via Docker, como validado nesta sessão.
 - `tsx watch` (usado em `npm run dev`) depende de `chokidar` para detectar mudanças de arquivo. Em bind mounts do Docker Desktop no Windows, eventos de sistema de arquivos (inotify) nem sempre se propagam para dentro do container — o hot-reload silenciosamente não disparava, apesar do arquivo já estar atualizado dentro do container (confirmado com `docker compose exec monitor cat src/index.ts`). Corrigido setando `CHOKIDAR_USEPOLLING: "true"` no `environment` do serviço `monitor` em `docker-compose.yml`. Validado com um teste real de edição de arquivo: o container detectou a mudança e reiniciou o processo (`tsx` logou `change in ./src/index.ts Rerunning...`).
@@ -89,6 +99,8 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
 - Implementado o HTTP Monitor (`src/monitoring/http-monitor.ts`) e o tipo `CheckResult` genérico (`src/types/index.ts`), com 8 testes novos usando servidor HTTP local efêmero. Durante a implementação, uma investigação empírica (scripts `tsx` descartáveis, depois apagados) confirmou o comportamento de `redirect: "manual"` no Node e revelou que a porta 1 é bloqueada pelo `fetch`/undici antes de tentar conectar — o teste inicial de "connection refused" estava testando o cenário errado e foi corrigido para usar uma porta alta válida.
 - Implementado o Scheduler (`src/monitoring/scheduler.ts`), com 9 testes novos cobrindo intervalo, ausência de sobreposição, isolamento entre targets, resiliência a falhas e shutdown limpo.
 - Implementado o State Store (`src/monitoring/state-store.ts`) e os tipos `TargetStatus`/`MonitorState`/`StateTransition` (`src/types/index.ts`), com 13 testes novos cobrindo a máquina de estados, thresholds, flapping, downtime e isolamento entre targets.
+- Revisão completa de tudo implementado até então, incluindo dois testes de integração de ponta a ponta (scripts `tsx` descartáveis): (1) Config → Scheduler → HTTP Monitor → State Store rodando juntos contra um servidor HTTP local, confirmando `UNKNOWN → UP → DOWN → UP` com downtime correto; (2) mais tarde, depois da Alert Policy, um incidente completo com reminder de cooldown. Nenhum bug novo encontrado no código já revisado individualmente — o valor da revisão foi confirmar que as peças se encaixam sem atrito de tipos.
+- Implementado o método `StateStore.recordAlertSent()` e a Alert Policy (`src/monitoring/alert-policy.ts`, função pura `evaluateAlert`), com os tipos `AlertEvent`/`DownAlertMetadata`/`RecoveredAlertMetadata` (`src/types/index.ts`). 13 testes novos (11 da Alert Policy + 2 do `recordAlertSent`).
 
 ## Validation
 
@@ -105,9 +117,9 @@ npm run build
 # OK — tsc -p tsconfig.build.json gerou dist/index.js.
 
 npm test
-# OK — 53 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
+# OK — 67 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
 # 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts,
-# 13 de src/monitoring/state-store.ts.
+# 15 de src/monitoring/state-store.ts, 11 de src/monitoring/alert-policy.ts.
 # Suíte completa rodada 3x seguidas para checar flakiness de timing nos testes do Scheduler — estável nas 3.
 
 npm start
@@ -163,6 +175,15 @@ docker compose build && docker build --target production -t monitora-production 
 
 docker compose build && docker build --target production -t monitora-production .
 # OK — ambas as imagens reconstruídas com src/monitoring/state-store.ts novo.
+
+# --- após a revisão geral + Alert Policy ---
+
+npx tsx <script descartável>
+# OK (2x) — integração de ponta a ponta confirmada manualmente antes e depois da Alert Policy;
+# scripts não commitados (removidos após a checagem).
+
+docker compose build && docker build --target production -t monitora-production .
+# OK — ambas as imagens reconstruídas com src/monitoring/alert-policy.ts novo.
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.

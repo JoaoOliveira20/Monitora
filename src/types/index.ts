@@ -30,3 +30,23 @@ export interface StateTransition {
   occurredAt: Date;
   downtimeMs?: number;
 }
+
+export type AlertEventType = "DOWN" | "RECOVERED";
+
+export interface DownAlertMetadata {
+  consecutiveFailures: number;
+  lastError?: string;
+}
+
+export interface RecoveredAlertMetadata {
+  downtimeMs?: number;
+}
+
+export interface AlertEvent {
+  type: AlertEventType;
+  targetId: string;
+  targetName: string;
+  occurredAt: Date;
+  message: string;
+  metadata: DownAlertMetadata | RecoveredAlertMetadata;
+}

@@ -200,6 +200,24 @@ test("StateStore keeps lastSuccessAt and lastFailureAt as independent histories 
   assert.deepEqual(state?.lastFailureAt, at(60));
 });
 
+test("StateStore.recordAlertSent updates lastAlertAt for an existing target", () => {
+  const store = new StateStore();
+  const target = buildTarget();
+
+  store.recordCheckResult(target, buildResult({ success: false, checkedAt: at(0) }));
+  store.recordAlertSent("target-1", at(30));
+
+  assert.deepEqual(store.getState("target-1")?.lastAlertAt, at(30));
+});
+
+test("StateStore.recordAlertSent does nothing for a target with no recorded state", () => {
+  const store = new StateStore();
+
+  store.recordAlertSent("unknown-target", at(0));
+
+  assert.equal(store.getState("unknown-target"), undefined);
+});
+
 test("StateStore keeps state isolated between targets", () => {
   const store = new StateStore();
   const targetA = buildTarget({ id: "target-a", failureThreshold: 1 });
