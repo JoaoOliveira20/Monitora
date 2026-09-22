@@ -2,11 +2,11 @@
 
 ## Current Status
 
-Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema implementados e revisados. HTTP Monitor implementado e testado. Scheduler, Log/Host Monitor, State Store, Alert Policy e Discord Notifier ainda não existem.
+Ambiente inicial validado (incluindo `docker compose up` real) e repositório no GitHub (`origin/main`). Config Loader + schema, HTTP Monitor e Scheduler implementados e testados. Nada ainda está "ligado" em `src/index.ts` (não há um processo de fato rodando o ciclo completo config → scheduler → monitor). Log/Host Monitor, State Store, Alert Policy e Discord Notifier ainda não existem.
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. A implementação do HTTP Monitor foi concluída.
+Nenhuma tarefa em execução no momento. A implementação do Scheduler foi concluída.
 
 ## Completed
 
@@ -34,6 +34,8 @@ Nenhuma tarefa em execução no momento. A implementação do HTTP Monitor foi c
 - **CheckResult genérico** (`src/types/index.ts`): `CheckResult<Metadata = unknown>` com `targetId`, `success`, `checkedAt`, `durationMs`, `error?`, `metadata`. Parametrizado por tipo para cada monitor poder tipar seu próprio `metadata` sem o State Store/Alert Policy precisarem conhecer detalhes de cada monitor (Rule 6 da arquitetura).
 - **HTTP Monitor** (`src/monitoring/http-monitor.ts`): `checkHttpTarget(target: HttpTarget): Promise<CheckResult<HttpCheckMetadata>>`, usando `fetch` nativo do Node com `AbortController` para timeout e `redirect: "manual"` para capturar o status 3xx literal (ver "Technical Notes"). Resolve `url`/`urlEnv` (decisão já registrada na etapa anterior). Sucesso = status 2xx ou 3xx; 4xx/5xx é falha com `error: "unexpected HTTP status <code>"`. Falhas de conexão são categorizadas (timeout, DNS, connection refused, TLS) sem nunca incluir a URL bruta na mensagem de erro (segurança — evita vazar credenciais embutidas na URL ou URLs internas sensíveis). Não manda nada ao Discord, não conhece Scheduler.
   - 8 testes (`tests/http-monitor.test.ts`) usando um servidor HTTP local efêmero (`node:http`, porta 0) — sem depender de rede externa: sucesso 200, redirect 3xx, erro 4xx, erro 5xx, timeout, connection refused, `urlEnv` ausente, `urlEnv` resolvido corretamente.
+- **Scheduler** (`src/monitoring/scheduler.ts`): classe `Scheduler(targets, checkTarget, callbacks?)` — recebe a lista de `Target[]` (do config) e uma função `checkTarget: (target: Target) => Promise<CheckResult>` injetada de fora (não conhece HTTP/Log/Host Monitor nem Discord). Cada target roda seu próprio laço independente ("self-scheduling": check → aguarda conclusão → espera `intervalSeconds` → repete), o que garante naturalmente que nunca há dois checks simultâneos do mesmo target, e que um target lento não bloqueia os outros (laços independentes). `start()` ignora targets com `enabled: false` e lança erro se chamado enquanto já está rodando. Falhas em `checkTarget` são capturadas (nunca derrubam o loop nem o processo) e reportadas via callback `onCheckError`; resultados bem-sucedidos vão para `onResult`. `stop()` usa `AbortController` para interromper a espera entre execuções imediatamente (não espera o intervalo inteiro passar) mas aguarda (`Promise.allSettled`) qualquer check já em andamento terminar antes de resolver — shutdown limpo conforme a arquitetura.
+  - 9 testes (`tests/scheduler.test.ts`), com timers reais (delays pequenos, sem mock de tempo): intervalo respeitado, sem sobreposição do mesmo target, isolamento entre targets (lento não bloqueia rápido), continua agendando após falha, callback de resultado, ignora desabilitados, `stop()` rápido, `stop()` espera check em andamento, `start()` duplo lança erro. Suíte rodada 3x seguidas para checar estabilidade de timing — sem flakiness observada.
 
 ## In Progress
 
@@ -41,9 +43,9 @@ Nenhuma tarefa em execução no momento. A implementação do HTTP Monitor foi c
 
 ## Next Steps
 
-- Implementar o `Scheduler` (`src/monitoring/scheduler.ts`) respeitando `intervalSeconds` por target e evitando execuções concorrentes do mesmo target.
-- Implementar o `State Store` em memória (`src/monitoring/state-store.ts`) com a máquina de estados `UNKNOWN → UP → DOWN` e cálculo de downtime.
+- Implementar o `State Store` em memória (`src/monitoring/state-store.ts`) com a máquina de estados `UNKNOWN → UP → DOWN`, failure/recovery threshold e cálculo de downtime.
 - Somente depois disso, implementar a `Alert Policy` e o `Discord Notifier` com o envio real de embeds.
+- Em algum ponto (provavelmente depois do State Store, antes do Discord Notifier), montar o "cabo" em `src/index.ts` que carrega a config, cria o `Scheduler` com uma função de dispatch por `target.type` (hoje só `http` tem monitor implementado) e liga ao State Store — hoje nada disso está conectado ainda.
 
 Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementais separadas, uma de cada vez, conforme o protocolo definido em `CLAUDE.md`.
 
@@ -61,6 +63,8 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
 - `checkHttpTarget` usa `fetch(url, { redirect: "manual" })` em vez do padrão (`"follow"`). Confirmado empiricamente (script `tsx` descartável) que, diferente do comportamento de browser (onde `redirect: "manual"` zera o status por privacidade cross-origin), no Node/undici o `response.status` real (302, etc.) fica visível com `redirect: "manual"`. Isso é necessário porque a arquitetura lista "3xx" como um caso relevante que o HTTP Monitor deve tratar — com `redirect: "follow"` (padrão) nunca veríamos um 3xx, só o status final após seguir a cadeia.
 - `checkHttpTarget` nunca inclui a URL bruta do target nas mensagens de erro (`error` do `CheckResult`), só uma categoria (`"DNS resolution failed"`, `"connection refused"`, `"TLS handshake failed"`, `"request timed out after Xms"`, ou o fallback genérico `"request failed"`). Decisão de segurança: a URL pode conter credenciais embutidas ou ser uma URL interna sensível, e a arquitetura exige sanitizar esse tipo de informação antes de logar ou mandar pro Discord (`docs/ARCHITECTURE.md`, seção 23).
 - Ao testar a categorização de erro de conexão, o primeiro teste usava `http://127.0.0.1:1` (porta 1) esperando `ECONNREFUSED`, mas o `fetch`/undici bloqueia portas "inseguras" (a mesma lista de "forbidden ports" dos browsers) antes mesmo de tentar conectar, lançando `cause: Error("bad port")` sem `.code`. Isso caía no fallback genérico `"request failed"` — funcionalmente correto (`success: false`), mas a categorização ficava errada. Corrigido usando uma porta alta válida (`59999`) sem nada escutando, que gera o `ECONNREFUSED` real esperado. Documentado aqui porque não é óbvio e pode confundir uma sessão futura mexendo nesses testes.
+- O `Scheduler` trabalha diretamente com o tipo `Target` (união `HttpTarget | LogTarget | HostTarget` de `src/config/schema.ts`) em vez de ser genérico (`<T>`). Decisão consciente: o Scheduler sempre vai lidar com targets vindos da configuração do Monitora, não há requisito real para generalizar além disso — generics aqui seriam abstração sem benefício concreto (regra do CLAUDE.md contra abstração prematura).
+- `Scheduler.stop()` usa `AbortController.abort()` para interromper apenas a espera (`delay` entre execuções), nunca o check em andamento — abortar um check no meio poderia deixar o HTTP Monitor (ou um monitor futuro) em estado inconsistente. Isso é o que permite "parar novos checks; aguardar operações em andamento quando possível" (regra de graceful shutdown) sem sacrificar a resposta rápida do `stop()`.
 - Limitação conhecida e aceita por ora: um host target sem nenhum dos três campos de threshold (`cpuThresholdPercent`, `memoryThresholdPercent`, `diskThresholdPercent`) é aceito pelo schema, mas nunca vai gerar alerta (não há threshold "global" de host implementado, só os campos por-target). Como o Host Monitor ainda não existe, o impacto é zero por ora; reavaliar quando o Host Monitor for implementado — pode fazer sentido exigir pelo menos um threshold definido quando `enabled: true`.
 - O ambiente de validação local tinha Node.js, npm e Docker instalados no host (usados para gerar `package-lock.json` e rodar as validações mais rápido), mas o projeto continua desenhado para não exigir Node/npm no host — tudo roda também via Docker, como validado nesta sessão.
 - `tsx watch` (usado em `npm run dev`) depende de `chokidar` para detectar mudanças de arquivo. Em bind mounts do Docker Desktop no Windows, eventos de sistema de arquivos (inotify) nem sempre se propagam para dentro do container — o hot-reload silenciosamente não disparava, apesar do arquivo já estar atualizado dentro do container (confirmado com `docker compose exec monitor cat src/index.ts`). Corrigido setando `CHOKIDAR_USEPOLLING: "true"` no `environment` do serviço `monitor` em `docker-compose.yml`. Validado com um teste real de edição de arquivo: o container detectou a mudança e reiniciou o processo (`tsx` logou `change in ./src/index.ts Rerunning...`).
@@ -77,6 +81,7 @@ Nenhum desses itens foi iniciado — devem ser tratados como tarefas incrementai
   1. **Thresholds de host sem limite superior**: `cpuThresholdPercent: 500` passava sem erro (era só `must be a positive number`). Trocado `optionalPositiveNumber` por `optionalPercentage`, que exige `0 < valor <= 100`, para os três campos de threshold do host target.
   2. **`url` do HTTP target sem validação de formato**: `url: "not-a-url-at-all"` passava sem erro. Adicionada `requireUrlString` (usa o `URL` nativo do Node em try/catch) aplicada ao campo `url` quando presente (não se aplica a `urlEnv`, que é só o nome de uma env var). Dois testes de regressão adicionados.
 - Implementado o HTTP Monitor (`src/monitoring/http-monitor.ts`) e o tipo `CheckResult` genérico (`src/types/index.ts`), com 8 testes novos usando servidor HTTP local efêmero. Durante a implementação, uma investigação empírica (scripts `tsx` descartáveis, depois apagados) confirmou o comportamento de `redirect: "manual"` no Node e revelou que a porta 1 é bloqueada pelo `fetch`/undici antes de tentar conectar — o teste inicial de "connection refused" estava testando o cenário errado e foi corrigido para usar uma porta alta válida.
+- Implementado o Scheduler (`src/monitoring/scheduler.ts`), com 9 testes novos cobrindo intervalo, ausência de sobreposição, isolamento entre targets, resiliência a falhas e shutdown limpo.
 
 ## Validation
 
@@ -93,8 +98,9 @@ npm run build
 # OK — tsc -p tsconfig.build.json gerou dist/index.js.
 
 npm test
-# OK — 30 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
-# 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts (servidor HTTP local efêmero, sem rede externa).
+# OK — 39 testes passaram (tsx --test "tests/**/*.test.ts"): 3 de src/index.ts, 14 de src/config/schema.ts,
+# 5 de src/config/loader.ts, 8 de src/monitoring/http-monitor.ts, 9 de src/monitoring/scheduler.ts.
+# Suíte completa rodada 3x seguidas para checar flakiness de timing nos testes do Scheduler — estável nas 3.
 
 npm start
 # OK — "Monitora starting in development mode" impresso via dist/index.js.
@@ -139,6 +145,11 @@ docker build --target production -t monitora-production .
 
 docker compose build && docker build --target production -t monitora-production .
 # OK — ambas as imagens reconstruídas com src/monitoring/ e src/types/ novos.
+
+# --- após implementar o Scheduler ---
+
+docker compose build && docker build --target production -t monitora-production .
+# OK — ambas as imagens reconstruídas com src/monitoring/scheduler.ts novo.
 ```
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
