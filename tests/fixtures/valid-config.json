@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "defaults": {
+    "intervalSeconds": 60,
+    "timeoutMs": 5000,
+    "failureThreshold": 2,
+    "recoveryThreshold": 1,
+    "cooldownSeconds": 900
+  },
+  "targets": [
+    {
+      "id": "example-site",
+      "name": "Example Site",
+      "type": "http",
+      "enabled": false,
+      "url": "https://example.com",
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    },
+    {
+      "id": "app-log",
+      "name": "Application Log",
+      "type": "log",
+      "enabled": false,
+      "path": "/var/log/monitored/app.log",
+      "patterns": ["ERROR", "FATAL"],
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    }
+  ]
+}
