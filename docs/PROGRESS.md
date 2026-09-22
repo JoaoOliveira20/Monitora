@@ -6,7 +6,7 @@
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. O Bot do Discord (`src/discord/bot.ts`) e o command handler (`src/commands/status.ts`) foram implementados, testados e validados via Docker (com credenciais ausentes e com credenciais inválidas — o fluxo de sucesso completo só pode ser validado pelo usuário, com credenciais reais).
+Nenhuma tarefa em execução no momento. O usuário fez o **primeiro teste real com credenciais de verdade** (o que esta sessão não conseguia fazer sozinha) e encontrou um problema de usabilidade real: `/status` não respondia. Causa raiz identificada e corrigida (ver "Recent Changes") — bot agora loga os IDs dos servidores conectados, resolvendo o problema de descoberta do `DISCORD_GUILD_ID` que causou a confusão.
 
 ## Completed
 
@@ -92,6 +92,7 @@ Nenhuma tarefa em execução no momento. O Bot do Discord (`src/discord/bot.ts`)
   - **Bot é opcional**: se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` não estiverem definidas, o Monitora loga isso claramente e continua rodando sem o bot (scheduler + notificações via webhook funcionam normalmente). Se as credenciais existirem mas forem inválidas, o erro do login/registro é capturado e logado — não derruba o processo.
   - **`index.ts`**: `startMonitoring` virou assíncrona (precisa de `await client.login()`); `maybeStartDiscordBot` decide se inicia o bot; o `Client` retornado é guardado e destruído (`client.destroy()`) no `shutdown()`, junto do `Scheduler.stop()` — graceful shutdown cobre o bot também.
   - **Validação real via Docker** (sem credenciais reais, que só o usuário tem): (1) sem `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` — log `"Discord bot disabled: DISCORD_TOKEN/DISCORD_CLIENT_ID not set"`, resto do sistema funcionando normalmente; (2) com credenciais inválidas — `REST.put` falhou com `401: Unauthorized` real (a API do Discord respondeu de verdade), capturado e logado como `"failed to start Discord bot: 401: Unauthorized"`, container continuou `Up` normalmente. O fluxo de **sucesso completo** (bot conectando de verdade e respondendo `/status` em um servidor real) não pôde ser validado nesta sessão — precisa das credenciais reais do usuário; documentado passo a passo no README (criar aplicação no Discord Developer Portal, gerar token, convidar com escopos `bot` + `applications.commands`).
+- **Achado real do primeiro teste com credenciais de verdade do usuário** (a validação que esta sessão não conseguia fazer sozinha): o bot conectou e registrou o comando com sucesso (`"Discord bot connected, /status command registered"` no log), mas `/status` não aparecia no Discord. Causa raiz: sem `DISCORD_GUILD_ID`, o registro é global, e o Discord pode levar até ~1h para propagar um comando global para o autocomplete — o usuário testou logo após subir o container. Não era um bug de lógica (o comando estava de fato registrado, confirmado pela ausência de erro), mas um problema real de usabilidade/descoberta: as instruções do README pediam para achar o Guild ID via "Modo Desenvolvedor → clique direito no servidor", que o usuário não conseguiu localizar. Corrigido de duas formas: (1) `src/discord/bot.ts` ganhou `logConnectedGuilds()`, que loga nome+ID de cada servidor conectado assim que o bot fica pronto (evento `ready`), e um aviso explícito quando `DISCORD_GUILD_ID` não está definida; (2) README reescrito para instruir "copie o ID direto do log" em vez de caçar nas configurações do Discord. Nenhum teste automatizado dedicado para `logConnectedGuilds` (mockar o evento `ready` de um `Client` real teria baixo valor para o esforço — é puro logging, mesmo padrão de "cola sem testes" já usado em outras partes finas do bot/index.ts).
 
 ## In Progress
 
@@ -381,3 +382,13 @@ docker run --rm monitora-production
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
 
 Todas as validações mínimas exigidas passaram, incluindo execução real via `docker compose up` (não só `build`), com um Node Exporter de verdade (não mockado) na validação final. O fluxo de sucesso completo do Discord Bot (login real + `/status` respondendo em um servidor real) **não foi validado nesta sessão** — depende de credenciais reais que só o usuário possui; documentado no README como próximo passo do usuário.
+
+```bash
+# --- após o usuário testar com credenciais reais e reportar /status não respondendo ---
+
+npm run typecheck && rm -rf dist && npm run build && npm test
+# OK — 136/136 (nenhum teste novo desta vez; logConnectedGuilds é puro logging, sem valor em mockar
+# o evento "ready" de um Client real para isso).
+```
+
+Usuário confirmou (via logs colados) que o bot conectou e registrou o comando com sucesso — a causa raiz (registro global sem `DISCORD_GUILD_ID`, mais instruções confusas de como achar o Guild ID) foi identificada por perguntas direcionadas, não por suposição. Correção (log de guilds conectados) ainda não retestada com credenciais reais pelo usuário nesta sessão.

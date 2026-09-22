@@ -43,12 +43,28 @@ async function handleStatusInteraction(interaction: Interaction, options: Discor
   }
 }
 
+function logConnectedGuilds(client: Client, guildIdConfigured: boolean): void {
+  client.once("ready", (readyClient) => {
+    const guilds = [...readyClient.guilds.cache.values()].map((guild) => `${guild.name} (${guild.id})`);
+    console.log(`Discord bot ready as ${readyClient.user.tag}`);
+    console.log(`Connected to ${guilds.length} guild(s): ${guilds.join(", ") || "none"}`);
+
+    if (!guildIdConfigured) {
+      console.log(
+        "DISCORD_GUILD_ID is not set: /status was registered globally and can take up to 1h to appear in Discord. " +
+          "Set DISCORD_GUILD_ID to one of the guild IDs above to register it instantly instead."
+      );
+    }
+  });
+}
+
 export async function startDiscordBot(options: DiscordBotOptions): Promise<Client> {
   const rest = new REST().setToken(options.token);
   await registerSlashCommands(rest, options.clientId, options.guildId);
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
   client.on("interactionCreate", (interaction) => void handleStatusInteraction(interaction, options));
+  logConnectedGuilds(client, options.guildId !== undefined);
 
   await client.login(options.token);
 

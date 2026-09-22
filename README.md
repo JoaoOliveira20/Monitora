@@ -79,10 +79,10 @@ O comando `/status` é opcional — sem ele, o Monitora continua enviando alerta
 2. Em **Bot**, clique em **Reset Token** para gerar um token — copie e cole em `DISCORD_TOKEN` no `.env`. **Trate esse token como uma senha**: quem o tiver pode controlar o bot.
 3. Em **General Information**, copie o **Application ID** para `DISCORD_CLIENT_ID`.
 4. Em **OAuth2 → URL Generator**, marque os escopos `bot` e `applications.commands` (nenhuma permissão de bot especial é necessária — `/status` só lê o estado em memória). Abra a URL gerada e convide o bot para o seu servidor.
-5. (Recomendado durante testes) Copie o ID do seu servidor (`Configurações do Servidor → Copiar ID do Servidor`, com o modo desenvolvedor ativado no Discord) para `DISCORD_GUILD_ID` — assim o `/status` aparece quase instantaneamente, em vez de esperar a propagação global.
-6. `docker compose up` — o log deve mostrar `Discord bot connected, /status command registered`. Rode `/status` em qualquer canal onde o bot tenha permissão de ver/responder.
+5. `docker compose up` (mesmo sem `DISCORD_GUILD_ID` preenchida ainda) — o log mostra `Discord bot connected, /status command registered` e, logo em seguida, `Connected to N guild(s): <nome do servidor> (<id>)`. **Copie esse ID** direto do log e cole em `DISCORD_GUILD_ID` no `.env` — mais fácil do que caçar nas configurações do Discord.
+6. Reinicie (`docker compose up` de novo — `.env` não recarrega sozinho como o código faz). Agora o `/status` é registrado só no seu servidor e aparece em segundos, em vez de esperar a propagação global (que pode levar até ~1h).
 
-Se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` faltarem ou forem inválidos, o Monitora loga isso claramente e continua rodando sem o bot — não é um erro fatal.
+**Sem `DISCORD_GUILD_ID`, o comando ainda funciona, só demora a aparecer na lista de autocomplete do Discord** — não é um erro, é só o tempo normal de propagação de comandos globais. Se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` faltarem ou forem inválidos, o Monitora loga isso claramente e continua rodando sem o bot — também não é um erro fatal.
 
 ### `config/targets.json`
 
