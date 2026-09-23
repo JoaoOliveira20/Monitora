@@ -27,4 +27,6 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/config ./config
 
+USER node
+
 CMD ["npm", "start"]
