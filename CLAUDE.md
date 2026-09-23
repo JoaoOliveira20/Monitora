@@ -354,12 +354,16 @@ Keep `.env` outside Git.
 
 Keep `.env.example` safe and free of real credentials.
 
+`config/targets.json` is local, installation-specific configuration and is gitignored — it is never committed. `config/targets.example.json` is the public, versioned template that a fresh clone starts from (`docs/CONFIGURATION.md` documents this flow in full). The same public/local split applies to `.env.example` (public) vs. `.env` (local, gitignored).
+
+**Configuration examples are part of the public contract of the project.** Whenever the configuration schema, environment variables, defaults, or supported configuration options change, update the corresponding example files (`config/targets.example.json`, `.env.example`) and `docs/CONFIGURATION.md` in the same task — not as a follow-up. This is not optional documentation polish: an out-of-date example is actively misleading to anyone setting up the project from scratch, since it is the first (and often only) reference they read.
+
 If a configuration contract changes, update:
 
 - the configuration schema;
-- relevant tests;
-- documentation;
-- examples when appropriate.
+- relevant tests (including `tests/config-examples.test.ts`, which validates that `config/targets.example.json` still parses against the real schema);
+- documentation (`README.md`, `docs/CONFIGURATION.md`);
+- `config/targets.example.json` and `.env.example`.
 
 ---
 

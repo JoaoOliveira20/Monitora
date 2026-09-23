@@ -46,9 +46,10 @@ Não é necessário ter Node.js ou npm instalados no host — tudo roda dentro d
 git clone <url-do-seu-fork>
 cd Monitora
 cp .env.example .env
+cp config/targets.example.json config/targets.json
 ```
 
-O `config/targets.json` do repositório vem com um target de exemplo **desativado** (`"enabled": false`, apontando para `https://example.com`) — edite-o (junto com o `.env`) conforme a seção [Configuração](#configuração) abaixo antes de usar de verdade. Depois:
+Os dois arquivos criados (`.env` e `config/targets.json`) são a sua configuração local — não são versionados. Edite os dois conforme a seção [Configuração](#configuração) abaixo antes de usar de verdade. Depois:
 
 ```bash
 docker compose build
@@ -63,7 +64,7 @@ docker compose down
 
 ## Configuração
 
-Dois arquivos precisam ser configurados antes do monitor ser útil de verdade: `.env` e `config/targets.json`. **Nenhum dos dois deve conter segredos reais commitados no Git** — o `.env` já está no `.gitignore`; o `config/targets.json` normalmente não tem segredos (as URLs de webhook ficam no `.env`), mas se você editar o seu localmente para testes e não quiser que essas mudanças vão para o seu fork, veja a dica no final desta seção.
+Dois arquivos precisam ser configurados antes do monitor ser útil de verdade: `.env` e `config/targets.json`. **Nenhum dos dois é versionado** — os dois estão no `.gitignore`, então suas edições nunca vão pro Git por acidente. O que é versionado são os exemplos públicos, `.env.example` e `config/targets.example.json`, que você copia pra criar os seus (veja [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) para o fluxo completo).
 
 ### `.env`
 
@@ -73,6 +74,7 @@ Copie `.env.example` para `.env` e preencha:
 |---|---|---|
 | `NODE_ENV` | Não | `development` ou `production`. Já vem preenchida com `development`; o `Dockerfile` força `production` na imagem de produção. |
 | `MONITOR_NAME` | Não | Nome exibido no log de inicialização e no `/status`. Se vazia, usa `"Monitora"`. |
+| `MONITORA_CONFIG_PATH` | Não | Caminho do arquivo de targets. Se vazia, usa `config/targets.json` relativo ao diretório de execução (o padrão de sempre). Só precisa mexer se quiser apontar pra um arquivo em outro lugar. |
 | `DISCORD_WEBHOOK_MAIN` | Sim, se algum target usar esse nome | **Exemplo** de variável referenciada por um target no `config/targets.json` (campo `discordWebhookEnv`). O nome não é fixo — cada target aponta para a env var que quiser (veja abaixo). O valor é a URL completa do webhook do Discord (`Configurações do Canal → Integrações → Webhooks → Novo Webhook → Copiar URL`). |
 | `DISCORD_WEBHOOK_URL` | Não | Reservada, não usada por nenhum código hoje — pode deixar em branco. |
 | `DISCORD_TOKEN` | Não (só para o Bot `/status`) | Token do Bot do Discord. Sem ela (ou sem `DISCORD_CLIENT_ID`), o Monitora roda normalmente, só sem o comando `/status`. Veja [Configurando o Bot do Discord](#configurando-o-bot-do-discord) abaixo. |
@@ -105,7 +107,13 @@ O comando `/status` é opcional — sem ele, o Monitora continua enviando alerta
 
 Define **o que** deve ser monitorado e **como**. Adicionar ou remover um serviço não exige nenhuma alteração de código — só editar este arquivo.
 
-O repositório já vem com um exemplo (desativado) para você copiar e adaptar:
+`config/targets.json` é a sua configuração real e **não é versionada** (está no `.gitignore`). O que o repositório traz é `config/targets.example.json` — copie-o pra criar o seu:
+
+```bash
+cp config/targets.example.json config/targets.json
+```
+
+Esse example já demonstra os três tipos de target suportados (`http`, `log`, `host`), todos desativados por padrão — é só um modelo pra copiar e adaptar. Um trecho dele:
 
 ```json
 {
@@ -119,8 +127,8 @@ O repositório já vem com um exemplo (desativado) para você copiar e adaptar:
   },
   "targets": [
     {
-      "id": "example-site",
-      "name": "Example Site",
+      "id": "example-website",
+      "name": "Example Website",
       "type": "http",
       "enabled": false,
       "url": "https://example.com",
@@ -133,7 +141,9 @@ O repositório já vem com um exemplo (desativado) para você copiar e adaptar:
 - **`defaults`**: valores usados por qualquer target que não sobrescrever o campo individualmente.
 - **`targets`**: lista de serviços monitorados. `"type": "http"`, `"type": "log"` e `"type": "host"` funcionam de verdade.
 
-> **Testando localmente sem afetar o seu fork:** se você quiser editar `config/targets.json` com URLs/valores de teste sem correr o risco de commitar isso sem querer, rode `git update-index --skip-worktree config/targets.json` — o Git passa a ignorar mudanças nesse arquivo em qualquer `git add`/`commit`, mesmo em massa. Para reverter: `git update-index --no-skip-worktree config/targets.json`.
+Veja [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) para o fluxo completo de configuração (local vs. pública) e a regra de manutenção desse arquivo de exemplo.
+
+> **`config/targets.json` é local, não versionado.** Ele está no `.gitignore` — suas edições nunca vão pro Git, mesmo em commits em massa (`git add -A`). O que é versionado é o `config/targets.example.json`, que você copia pra criar o seu. Veja [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) para o fluxo completo de configuração local vs. pública.
 
 > **Mudou o `config/targets.json` com o container já rodando?** Diferente do código em `src/`, esse arquivo é lido só uma vez, na inicialização — editá-lo não reinicia o monitor sozinho. Rode `docker compose restart monitor` (ou `docker compose down && docker compose up`) para a mudança valer.
 

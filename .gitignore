@@ -1,7 +1,11 @@
 node_modules/
 dist/
+
+# configuração local (real) — veja docs/CONFIGURATION.md
 .env
 .env.*.local
+config/targets.json
+
 *.log
 npm-debug.log*
 logs/*.log

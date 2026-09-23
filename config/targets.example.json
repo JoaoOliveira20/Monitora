@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "defaults": {
+    "intervalSeconds": 60,
+    "timeoutMs": 5000,
+    "failureThreshold": 2,
+    "recoveryThreshold": 1,
+    "cooldownSeconds": 900
+  },
+  "targets": [
+    {
+      "id": "example-website",
+      "name": "Example Website",
+      "type": "http",
+      "enabled": false,
+      "url": "https://example.com",
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    },
+    {
+      "id": "example-internal-api",
+      "name": "Example Internal API",
+      "type": "http",
+      "enabled": false,
+      "urlEnv": "EXAMPLE_INTERNAL_API_URL",
+      "method": "GET",
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    },
+    {
+      "id": "example-app-log",
+      "name": "Example Application Log",
+      "type": "log",
+      "enabled": false,
+      "path": "/var/log/monitored/example-app.log",
+      "patterns": ["ERROR", "FATAL"],
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    },
+    {
+      "id": "example-host",
+      "name": "Example Host Metrics",
+      "type": "host",
+      "enabled": false,
+      "metricsUrl": "http://node-exporter:9100/metrics",
+      "diskMountpoint": "/",
+      "cpuThresholdPercent": 90,
+      "memoryThresholdPercent": 90,
+      "diskThresholdPercent": 90,
+      "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
+    }
+  ]
+}

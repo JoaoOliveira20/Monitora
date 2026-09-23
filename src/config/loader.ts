@@ -5,6 +5,10 @@ import { ConfigValidationError, parseMonitoraConfig, type MonitoraConfig, type T
 
 const DEFAULT_CONFIG_PATH = resolve(process.cwd(), "config/targets.json");
 
+function resolveDefaultConfigPath(): string {
+  return process.env.MONITORA_CONFIG_PATH || DEFAULT_CONFIG_PATH;
+}
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -45,7 +49,7 @@ function validateEnabledTargetEnvironment(target: Target): void {
   }
 }
 
-export function loadTargetsConfig(configPath: string = DEFAULT_CONFIG_PATH): MonitoraConfig {
+export function loadTargetsConfig(configPath: string = resolveDefaultConfigPath()): MonitoraConfig {
   const raw = readConfigFile(configPath);
   const config = parseMonitoraConfig(raw);
 
