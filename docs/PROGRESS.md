@@ -2,11 +2,11 @@
 
 ## Current Status
 
-**O roadmap original documentado está 100% implementado.** Os três tipos de monitor (HTTP, Log, Host), o pipeline completo (Config → Scheduler → Monitor → CheckResult → State Store → Alert Policy → Discord Notifier), e agora o **Bot do Discord com o comando `/status`** — o último item pendente do roadmap. `/status` lê só o `StateStore` em memória (nunca reroda healthchecks, conforme a arquitetura exige) e é opcional: sem `DISCORD_TOKEN`/`DISCORD_CLIENT_ID`, o Monitora roda normalmente, só sem o comando. A estrutura de diretórios bate exatamente com `docs/PROJECT_BLUEPRINT.md`/`docs/ARCHITECTURE.md`, incluindo o `src/commands/status.ts` que faltava. `README.md` reflete esse estado, com um passo a passo de como criar e configurar o bot no Discord Developer Portal. Repositório no GitHub (`origin/main`).
+**O roadmap original documentado está 100% implementado e validado de ponta a ponta, incluindo com credenciais reais do usuário.** Os três tipos de monitor (HTTP, Log, Host), o pipeline completo (Config → Scheduler → Monitor → CheckResult → State Store → Alert Policy → Discord Notifier), e o **Bot do Discord com o comando `/status`** — o último item do roadmap, agora confirmado funcionando de verdade em um servidor Discord real (usuário confirmou: "o /status já está funcionando"). `/status` lê só o `StateStore` em memória (nunca reroda healthchecks, conforme a arquitetura exige) e é opcional: sem `DISCORD_TOKEN`/`DISCORD_CLIENT_ID`, o Monitora roda normalmente, só sem o comando. A estrutura de diretórios bate exatamente com `docs/PROJECT_BLUEPRINT.md`/`docs/ARCHITECTURE.md`. `README.md` reflete esse estado, com um passo a passo de como criar e configurar o bot no Discord Developer Portal. Repositório no GitHub (`origin/main`).
 
 ## Current Task
 
-Nenhuma tarefa em execução no momento. Depois do achado de usabilidade do `DISCORD_GUILD_ID` (ver "Recent Changes"), o usuário pediu duas melhorias de documentação/onboarding: um exemplo real em `config/targets.json` (em vez de `targets: []` vazio) e uma reorganização do README com sumário e uma seção de comandos mais completa — ambas feitas e já commitadas (`4e55189`). Próximo passo é do usuário: rebuild (`docker compose build`), copiar o `DISCORD_GUILD_ID` do log (`Connected to N guild(s): ...`), colocar no `.env`, reiniciar e reconfirmar que `/status` responde.
+Nenhuma tarefa em execução no momento. Todo o roadmap está implementado e validado, inclusive o fluxo completo do Discord Bot com credenciais reais do usuário (`/status` confirmado funcionando). Nenhuma pendência conhecida no momento; próximos passos são só extensões futuras opcionais, ver "Next Steps".
 
 ## Completed
 
@@ -100,7 +100,7 @@ Nenhuma tarefa em execução no momento. Depois do achado de usabilidade do `DIS
 
 ## Next Steps
 
-- **Nenhum item do roadmap original documentado (`docs/PROJECT_BLUEPRINT.md`) está pendente.** Os únicos próximos passos são validação/uso real: o usuário precisa criar credenciais reais do bot (token, client ID) e confirmar que `/status` funciona de ponta a ponta em um servidor Discord de verdade — algo que não pôde ser testado nesta sessão sem essas credenciais.
+- **Nenhum item do roadmap original documentado (`docs/PROJECT_BLUEPRINT.md`) está pendente.** O usuário criou credenciais reais do bot, testou em um servidor Discord de verdade, e confirmou que `/status` funciona de ponta a ponta (ver "Recent Changes"/"Validation").
 - Possíveis extensões futuras não previstas no blueprint original, só se houver interesse real: mais slash commands (pausar/reativar um target, por exemplo), tipos de monitor adicionais (TCP, SSL, ping, database — mencionados como "possibilidades de extensão" em `docs/ARCHITECTURE.md` seção 26, não como requisitos).
 
 ## Blockers
@@ -156,6 +156,7 @@ Nenhuma tarefa em execução no momento. Depois do achado de usabilidade do `DIS
 - A pedido do usuário, depois do achado acima: `config/targets.json` ganhou um target de exemplo desativado (`example-site`, `https://example.com` — domínio reservado pela IANA, nunca resolve de verdade) no lugar de `targets: []`, para quem clonar o repo já ver o formato esperado; desativado de propósito para não gerar requests nem falhar validação de `discordWebhookEnv` num fork recém-clonado. Antes de sobrescrever, confirmado com o usuário que isso substituiria a config de teste local dele — autorizado explicitamente. README reorganizado: sumário no topo (âncoras conferidas manualmente contra as regras de geração de âncora do GitHub), e uma seção "Comandos" nova unificando Docker (build/up/down/logs/restart/ps) com os scripts npm que antes viviam em seções separadas — pedido direto do usuário após o teste real, sentindo falta de uma referência central. Adicionada a dica de `git update-index --skip-worktree config/targets.json` para o usuário poder editar a config localmente com valores de teste sem risco de commitar por engano no futuro. Passo a passo de configuração do Guild ID atualizado para instruir "copie o ID do log" em vez de caçar nas configurações do Discord.
 - Ativado `git update-index --skip-worktree config/targets.json` no ambiente local do usuário (comando pontual, não versionado — é configuração local do `.git`, não afeta quem clonar o repositório). Em seguida, o próprio arquivo local foi editado com dois targets HTTP de teste (`site-up` → `https://example.com`, `site-down` → domínio inexistente com `failureThreshold: 1` para alertar já no primeiro ciclo) para o usuário validar o fluxo completo com um DOWN e um UP reais. Usuário testou: `site-down` gerou alerta no Discord, `site-up` ficou silencioso (comportamento correto), mas `/status` ainda não aparecia — resolvido confirmando que o `DISCORD_GUILD_ID` (já visível no log graças a `logConnectedGuilds`) precisava ser copiado para o `.env` e o container reiniciado.
 - **Achado real durante esse teste, verificado ao vivo (não só lido no código)**: editei `config/targets.json` com o container já rodando (`docker compose up` em andamento) e o `tsx watch` não reiniciou o processo — confirmado comparando os logs antes/depois do `docker compose logs monitor --tail`. Causa: `loadTargetsConfig()` (`src/config/loader.ts`) lê o arquivo via `fs.readFileSync` em tempo de execução, fora do grafo de módulos importados que o `tsx watch` rastreia; diferente de arquivos `.ts` em `src/`, que são importados e por isso disparam reinício automático. O README documentava esse comportamento só para o `.env` ("`docker compose restart monitor` ... necessário depois de mudar o `.env`"), sem mencionar que `config/targets.json` tem exatamente a mesma exigência — lacuna real que um usuário editando targets com o monitor já no ar encontraria na prática. Corrigido: nota adicionada na tabela de comandos Docker e um aviso dedicado na seção `config/targets.json`, ambos deixando claro que é preciso `docker compose restart monitor` (ou down+up) depois de editar esse arquivo.
+- Depois de colar o `DISCORD_GUILD_ID` no `.env`, `docker compose restart monitor` foi executado e o log confirmou um shutdown gracioso (`received SIGTERM, shutting down`) seguido de reinício limpo, sem mais o aviso de registro global. **Usuário confirmou em seguida: "o /status já está funcionando"** — fecha o único item do roadmap que ainda dependia de validação com credenciais reais. Roadmap original (`docs/PROJECT_BLUEPRINT.md`) 100% implementado e validado.
 
 ## Validation
 
@@ -385,7 +386,7 @@ docker run --rm monitora-production
 
 Script avulso rodado localmente (`tsx`, depois apagado) confirmando que `loadTargetsConfig()` aceita o `config/targets.json` real do projeto (`targets: []`) sem erros.
 
-Todas as validações mínimas exigidas passaram, incluindo execução real via `docker compose up` (não só `build`), com um Node Exporter de verdade (não mockado) na validação final. O fluxo de sucesso completo do Discord Bot (login real + `/status` respondendo em um servidor real) **não foi validado nesta sessão** — depende de credenciais reais que só o usuário possui; documentado no README como próximo passo do usuário.
+Todas as validações mínimas exigidas passaram, incluindo execução real via `docker compose up` (não só `build`), com um Node Exporter de verdade (não mockado) na validação final. O fluxo de sucesso completo do Discord Bot (login real + `/status` respondendo em um servidor real) foi validado em sessão posterior — ver o bloco de comandos e a confirmação do usuário mais abaixo.
 
 ```bash
 # --- após o usuário testar com credenciais reais e reportar /status não respondendo ---
@@ -407,3 +408,19 @@ npm run typecheck && npm test
 Script `tsx` descartável (escrito em arquivo, não via `-e`, ver nota abaixo) confirmando que `loadTargetsConfig()` aceita o novo `config/targets.json` de exemplo (`example-site`, desativado) sem erros, aplicando os `defaults` corretamente.
 
 Uma primeira tentativa de validação com `npx tsx -e ""` ficou pendurada esperando stdin (`tsx` não tem flag `-e` como o `node -e`) e precisou ser abandonada em background; refeita escrevendo um arquivo `.ts` descartável de verdade, que rodou sem problemas. Documentado aqui para não repetir o mesmo erro de sintaxe numa sessão futura.
+
+```bash
+# --- teste de ponta a ponta com dois targets reais (um UP, um DOWN) e credenciais reais do usuário ---
+
+docker compose build && docker compose up
+# OK — "loaded 2 target(s), 2 enabled", bot conectou, log listou o servidor conectado com seu ID.
+
+# Editado config/targets.json com o container já rodando (site-up/site-down) para confirmar
+# que a mudança NÃO é pega automaticamente — ver achado acima. Revertido em seguida.
+
+# DISCORD_GUILD_ID copiado do log para o .env, depois:
+docker compose restart monitor
+# OK — "received SIGTERM, shutting down" seguido de reinício limpo, aviso de registro global sumiu.
+```
+
+Usuário confirmou no Discord: `site-down` gerou o alerta esperado, `site-up` ficou silencioso (comportamento correto), e **`/status` respondeu no servidor real** ("o /status já está funcionando"). Esta é a primeira validação de ponta a ponta do fluxo completo do Bot com credenciais reais — fecha a única pendência que restava do roadmap original.
