@@ -1,119 +1,225 @@
-# Monitora
+<p align="center">
+  <img src="docs/images/monitora-cover.svg" alt="Conceptual illustration of Monitora: a central node connected to monitored services, with one service in an alert state sending a notification" width="720">
+</p>
 
-Monitora é uma pequena plataforma de monitoramento configurável: ela verifica serviços web, arquivos de log e métricas de host (CPU/RAM/disco), e envia alertas para o Discord quando algo muda de estado — tudo rodando via Docker, sem precisar de Node.js instalado no seu computador.
+<h1 align="center">Monitora</h1>
 
-O objetivo é simples: monitorar múltiplos serviços sem precisar alterar código a cada novo serviço adicionado — tudo é configurado em um único arquivo JSON (`config/targets.json`).
+<p align="center">
+  A small, configurable monitoring service that checks web services, log files and host metrics, tracks their state, and sends alerts to Discord when something changes.
+</p>
 
-## Sumário
+<p align="center">
+  <sub>The illustration above is conceptual artwork. Monitora has no graphical interface; it runs as a headless service.</sub>
+</p>
 
-- [Status atual do projeto](#status-atual-do-projeto)
-- [Requisitos](#requisitos)
-- [Como rodar](#como-rodar)
-- [Configuração](#configuração)
-  - [`.env`](#env)
-  - [Configurando o Bot do Discord](#configurando-o-bot-do-discord)
-  - [`config/targets.json`](#configtargetsjson)
-- [Comandos](#comandos)
-- [Segurança](#segurança)
-- [Estrutura do projeto](#estrutura-do-projeto)
-- [Limitações conhecidas](#limitações-conhecidas-mvp)
+## Table of contents
 
-## Status atual do projeto
+- [Overview](#overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [How it works](#how-it-works)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [Development and validation](#development-and-validation)
+- [Security](#security)
+- [Current status and limitations](#current-status-and-limitations)
+- [Documentation](#documentation)
 
-O projeto está funcionalmente completo em relação ao que foi planejado originalmente:
+## Overview
 
-- **Configuração dinâmica** de múltiplos targets (`config/targets.json`), sem precisar alterar código.
-- **HTTP Monitor**: verifica serviços web (sucesso, erro HTTP, timeout, DNS, conexão recusada, TLS).
-- **Log Monitor**: acompanha um arquivo de log incrementalmente (sem reler o arquivo inteiro a cada ciclo), procurando por padrões configuráveis; lida com rotação/truncamento/recriação do arquivo.
-- **Host Monitor**: acompanha CPU, memória e disco de uma máquina através de um [Node Exporter](https://github.com/prometheus/node_exporter) (já incluso no `docker-compose.yml` deste projeto). Não lê `/proc`/`/sys` diretamente de dentro do container — isso daria métricas do container, não da máquina física.
-- **Máquina de estados** por target (`UNKNOWN → UP → DOWN → UP`), com downtime calculado (para targets HTTP e Host).
-- **Alertas via Discord** (webhook), com cooldown para não floodar o canal, e recuperação notificada separadamente.
-- **Scheduler** que verifica cada target de forma independente, sem sobreposição, sem derrubar o processo por falha de um único serviço.
-- **Bot do Discord com o comando `/status`**: mostra o estado atual conhecido de todos os targets, sem rodar nenhum healthcheck novo (lê só o que já está em memória — responde instantaneamente). Opcional: se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` não estiverem configurados, o Monitora roda normalmente sem o bot, só sem o comando interativo.
+Monitora watches a list of targets that you define in a single JSON file. Each target is checked on its own schedule, the result updates that target's state (`UNKNOWN`, `UP` or `DOWN`), and relevant changes are reported to a Discord channel through a webhook. Adding or removing a monitored service means editing the configuration, not the code.
 
-Veja `docs/PROGRESS.md` para o histórico detalhado de desenvolvimento e decisões tomadas, e `docs/ARCHITECTURE.md` para a arquitetura completa.
+It is meant for small setups, such as a personal server, a side project or a handful of internal services, where a full monitoring stack would be more than needed. It runs in Docker, so Node.js does not need to be installed on the machine that hosts it.
 
-## Requisitos
+Monitora is a personal project in active development. It covers the scope originally planned for it (see [Current status and limitations](#current-status-and-limitations)), but it has not been hardened for large-scale production use.
 
-- [Docker](https://docs.docker.com/get-docker/) e Docker Compose
+## Features
+
+**Monitoring**
+
+- **HTTP checks**: a target is healthy when it answers with a 2xx or 3xx status within the timeout. Redirects are not followed. 4xx and 5xx responses, timeouts, DNS failures, refused connections and TLS errors count as failures.
+- **Log checks**: reads a log file incrementally and looks for configurable substring patterns in new lines. It handles file rotation, truncation and re-creation.
+- **Host checks**: reads CPU, memory and disk usage from a [Node Exporter](https://github.com/prometheus/node_exporter) and compares them to configurable thresholds. A Node Exporter service is included in `docker-compose.yml`.
+
+**State and alerting**
+
+- A per-target state machine (`UNKNOWN`, `UP`, `DOWN`) with configurable failure and recovery thresholds for HTTP and host targets.
+- Downtime is calculated and reported when a target recovers.
+- Alerts are sent to Discord as embeds through webhooks, with a cooldown so a persistent problem does not flood the channel. Recovery notifications are sent separately and are not delayed by the cooldown.
+- Each target chooses its own webhook through an environment variable name, so different targets can notify different channels.
+
+**Discord bot (optional)**
+
+- A `/status` slash command that replies with the last known state of every enabled target. It reads in-memory state and does not run any new check. If the bot credentials are not set, Monitora runs normally without it.
+
+**Configuration and operations**
+
+- Targets, defaults and thresholds live in `config/targets.json`, validated at startup with clear error messages. Invalid configuration stops the process instead of failing silently.
+- Secrets stay in environment variables. The configuration file only references their names.
+- Each target runs in its own loop, with no overlapping checks, and a failing check never stops the others.
+- Graceful shutdown on `SIGTERM` and `SIGINT`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    config[("config/targets.json")] --> loader["Config loader<br/>and schema validation"]
+    loader --> scheduler["Scheduler<br/>one loop per enabled target"]
+    scheduler --> dispatcher["Dispatcher"]
+    dispatcher --> http["HTTP monitor"]
+    dispatcher --> log["Log monitor"]
+    dispatcher --> host["Host monitor"]
+    host -. "HTTP /metrics" .-> exporter[("Node Exporter")]
+    http --> store["State store"]
+    log --> store
+    host --> store
+    store --> policy["Alert policy<br/>thresholds, cooldown"]
+    policy --> notifier["Discord notifier<br/>webhook embeds"]
+    store --> status["/status handler"]
+    bot["Discord bot"] --> status
+```
+
+| Component | Location | Responsibility |
+| --- | --- | --- |
+| Entry point | `src/index.ts` | Loads the configuration, wires every component together, starts the optional bot and handles shutdown. |
+| Config loader and schema | `src/config/` | Reads `config/targets.json`, validates it, applies `defaults` to each target and checks that the referenced environment variables exist for enabled targets. |
+| Scheduler | `src/monitoring/scheduler.ts` | Runs one independent loop per enabled target. A check never overlaps with the previous check of the same target. |
+| Dispatcher | `src/monitoring/dispatch.ts` | Routes each target to the monitor that matches its `type`. |
+| Monitors | `src/monitoring/http-monitor.ts`, `src/logs/`, `src/system/` | Perform the checks and return a normalized `CheckResult`. |
+| State store | `src/monitoring/state-store.ts` | Keeps each target's state in memory and reports state transitions, including downtime. |
+| Alert policy | `src/monitoring/alert-policy.ts` | Decides whether a result or transition should produce an alert (`DOWN`, `RECOVERED`, `LOG_MATCH` or `HOST_THRESHOLD`), applying the cooldown. |
+| Discord notifier | `src/discord/notifier.ts` | Builds the embed for each alert type and delivers it to the target's webhook. Delivery failures are logged and never crash the process. |
+| Discord bot and `/status` | `src/discord/bot.ts`, `src/commands/status.ts` | Registers the slash command and formats the response from the state store. The formatting logic is a pure function with no dependency on `discord.js`. |
+
+More detail, including the architectural rules the project follows, is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## How it works
+
+1. **Configure.** You list the targets in `config/targets.json` and put secrets, such as webhook URLs, in `.env`.
+2. **Start.** On startup, Monitora validates the configuration. If anything is invalid or a referenced environment variable is missing, it logs the problem and exits.
+3. **Check.** The scheduler runs each enabled target at its own interval. The dispatcher picks the HTTP, log or host monitor and gets back a result.
+4. **Update state.** The state store records the result. A target moves to `DOWN` after `failureThreshold` consecutive failures and back to `UP` after `recoveryThreshold` consecutive successes.
+5. **Decide.** The alert policy turns state changes into alert events: `DOWN` and `RECOVERED` for HTTP targets, `HOST_THRESHOLD` and `RECOVERED` for host targets. A log target produces a `LOG_MATCH` event when new lines match a pattern. Repeated reminders for a target that stays `DOWN` respect `cooldownSeconds`.
+6. **Notify.** The notifier sends the event to the target's Discord webhook. If someone runs `/status`, the bot answers from the current in-memory state.
+
+## Tech stack
+
+| Technology | Role |
+| --- | --- |
+| Node.js 22 | Runtime. Checks use the built-in `fetch`, `node:fs` and timers, with no HTTP client library. |
+| TypeScript (strict) | Language for the whole codebase. |
+| [discord.js](https://discord.js.org/) | The only runtime dependency. Used for webhook delivery and the slash command bot. |
+| Docker and Docker Compose | Packaging and local execution. The `Dockerfile` has `development`, `build` and `production` stages, and the production stage runs as the non-root `node` user. |
+| Node Exporter | Source of host metrics, run as a companion container. |
+| `tsx` and `node:test` | Development runner (watch mode) and test runner. `tsx` and TypeScript are development dependencies. |
+
+## Project structure
+
+```text
+config/
+  targets.example.json    public example configuration (versioned)
+  targets.json            your real configuration (local, git-ignored)
+docs/
+  images/                 README artwork
+  ARCHITECTURE.md         architecture and architectural rules
+  CONFIGURATION.md        local vs. public configuration, secrets
+  PROGRESS.md             development history and decisions
+  PROJECT_BLUEPRINT.md    original project specification
+src/
+  commands/               /status response formatting
+  config/                 configuration loading and validation
+  discord/                bot (slash command) and notifier (webhook)
+  logs/                   log monitor
+  monitoring/             scheduler, dispatcher, HTTP monitor, state store, alert policy
+  system/                 host monitor (Node Exporter metrics)
+  types/                  shared domain types
+  index.ts                entry point
+tests/                    automated tests (node:test via tsx)
+logs/                     git-ignored folder for local log files
+.env.example              public example of the environment variables
+docker-compose.yml        monitor service and Node Exporter
+Dockerfile                development, build and production stages
+```
+
+## Getting started
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) with Docker Compose
 - Git
+- A Discord webhook URL, if you want alerts (`Channel settings → Integrations → Webhooks`)
 
-Não é necessário ter Node.js ou npm instalados no host — tudo roda dentro do container.
+Node.js is only needed if you want to run the scripts outside Docker (Node.js 22 or newer).
 
-## Como rodar
+### Run with Docker
 
 ```bash
-git clone <url-do-seu-fork>
+git clone https://github.com/JoaoOliveira20/Monitora.git
 cd Monitora
+
 cp .env.example .env
 cp config/targets.example.json config/targets.json
 ```
 
-Os dois arquivos criados (`.env` e `config/targets.json`) são a sua configuração local — não são versionados. Edite os dois conforme a seção [Configuração](#configuração) abaixo antes de usar de verdade. Depois:
+Edit both files (see [Configuration](#configuration)). The example targets ship with `enabled: false`, so enable and adapt at least one. Then:
 
 ```bash
 docker compose build
 docker compose up
 ```
 
-O container fica rodando continuamente, verificando os targets configurados nos intervalos definidos. Para parar, `Ctrl+C` no terminal onde `docker compose up` está rodando (o processo trata `SIGTERM`/`SIGINT` e encerra de forma limpa), ou em outro terminal:
+The container keeps running and checks the targets at their configured intervals. Stop it with `Ctrl+C`, or run `docker compose down` from another terminal.
+
+`docker compose` starts the `development` stage of the `Dockerfile`: it mounts the project directory and runs `npm run dev`, which restarts the process when files in `src/` change. A `production` image can be built with `docker build --target production -t monitora .`. Docker Compose does not define a service for it, so you need to provide the environment variables and the configuration file yourself when running that image.
+
+### Run without Docker
 
 ```bash
-docker compose down
+npm ci
+npm run dev
 ```
 
-## Configuração
+Monitora does not read `.env` by itself: Docker Compose injects it. Outside Docker, export the variables in your shell before starting. The host monitor also needs a reachable Node Exporter, so use the URL of your own instance in `metricsUrl`.
 
-Dois arquivos precisam ser configurados antes do monitor ser útil de verdade: `.env` e `config/targets.json`. **Nenhum dos dois é versionado** — os dois estão no `.gitignore`, então suas edições nunca vão pro Git por acidente. O que é versionado são os exemplos públicos, `.env.example` e `config/targets.example.json`, que você copia pra criar os seus (veja [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) para o fluxo completo).
+### Useful Docker commands
+
+| Command | What it does |
+| --- | --- |
+| `docker compose up -d` | Starts the stack in the background. |
+| `docker compose logs -f monitor` | Follows the logs of the main service. |
+| `docker compose restart monitor` | Restarts the service. Required after changing `.env` or `config/targets.json`, which are read only at startup. |
+| `docker compose down` | Stops and removes the containers and the network. |
+
+## Configuration
+
+Two local files configure an installation. Neither is versioned, and both are in `.gitignore`. The repository ships public examples (`.env.example` and `config/targets.example.json`) that you copy. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full local vs. public workflow.
 
 ### `.env`
 
-Copie `.env.example` para `.env` e preencha:
+| Variable | Required | Description |
+| --- | --- | --- |
+| `NODE_ENV` | No | `development` or `production`. The production image sets `production` itself. |
+| `MONITOR_NAME` | No | Name shown in the startup log and in `/status`. Defaults to `Monitora`. |
+| `MONITORA_CONFIG_PATH` | No | Path to the targets file. Defaults to `config/targets.json` in the working directory. |
+| `DISCORD_WEBHOOK_MAIN` | Only if a target references it | Example of a webhook variable. The name is not fixed: each target points to the variable it wants through `discordWebhookEnv`, and you can define as many as you need. The value is the full webhook URL. |
+| `DISCORD_WEBHOOK_URL` | No | Reserved. No code reads it today. |
+| `DISCORD_TOKEN` | Only for the bot | Discord bot token. Without it, or without `DISCORD_CLIENT_ID`, the bot is disabled and the rest runs normally. |
+| `DISCORD_CLIENT_ID` | Only for the bot | Application ID, needed to register the slash command. |
+| `DISCORD_GUILD_ID` | No | If set, `/status` is registered only in that server and appears within seconds. If empty, it is registered globally and can take up to about an hour to propagate. |
 
-| Variável | Obrigatória? | Descrição |
-|---|---|---|
-| `NODE_ENV` | Não | `development` ou `production`. Já vem preenchida com `development`; o `Dockerfile` força `production` na imagem de produção. |
-| `MONITOR_NAME` | Não | Nome exibido no log de inicialização e no `/status`. Se vazia, usa `"Monitora"`. |
-| `MONITORA_CONFIG_PATH` | Não | Caminho do arquivo de targets. Se vazia, usa `config/targets.json` relativo ao diretório de execução (o padrão de sempre). Só precisa mexer se quiser apontar pra um arquivo em outro lugar. |
-| `DISCORD_WEBHOOK_MAIN` | Sim, se algum target usar esse nome | **Exemplo** de variável referenciada por um target no `config/targets.json` (campo `discordWebhookEnv`). O nome não é fixo — cada target aponta para a env var que quiser (veja abaixo). O valor é a URL completa do webhook do Discord (`Configurações do Canal → Integrações → Webhooks → Novo Webhook → Copiar URL`). |
-| `DISCORD_WEBHOOK_URL` | Não | Reservada, não usada por nenhum código hoje — pode deixar em branco. |
-| `DISCORD_TOKEN` | Não (só para o Bot `/status`) | Token do Bot do Discord. Sem ela (ou sem `DISCORD_CLIENT_ID`), o Monitora roda normalmente, só sem o comando `/status`. Veja [Configurando o Bot do Discord](#configurando-o-bot-do-discord) abaixo. |
-| `DISCORD_CLIENT_ID` | Não (só para o Bot `/status`) | ID da aplicação do Discord (necessário para registrar o slash command). |
-| `DISCORD_GUILD_ID` | Não | Se definida, o `/status` é registrado só nesse servidor (aparece em segundos). Se vazia, é registrado globalmente (pode levar até ~1h para propagar). O bot te ajuda a descobrir esse ID — veja o passo a passo abaixo. |
+### Discord bot setup
 
-Você pode adicionar quantas variáveis `DISCORD_WEBHOOK_*` quiser, com o nome que preferir — o que importa é que o nome bata com o `discordWebhookEnv` do target correspondente em `config/targets.json`. Vários targets podem compartilhar o mesmo webhook.
+The `/status` command is optional. Alerts work without it.
 
-**Nunca coloque a URL de um webhook diretamente no `config/targets.json` ou em qualquer arquivo versionado** — a URL do webhook contém um token secreto embutido nela mesma. Ela deve existir apenas no `.env` local (fora do Git).
-
-### Configurando o Bot do Discord
-
-O comando `/status` é opcional — sem ele, o Monitora continua enviando alertas via webhook normalmente. Você usa **sua própria conta** do Discord para criar e gerenciar o bot; não é preciso (nem dá) fazer login como o bot em si.
-
-1. Vá em [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → dê um nome.
-2. No menu **Bot** (lateral esquerda) → **Reset Token** → copie o token gerado para `DISCORD_TOKEN` no `.env`. **Trate esse token como uma senha**: quem o tiver pode controlar o bot.
-3. No menu **General Information** → copie o **Application ID** para `DISCORD_CLIENT_ID`.
-4. No menu **OAuth2 → URL Generator** → marque os escopos `bot` e `applications.commands` (nenhuma permissão de bot especial é necessária — `/status` só lê o estado em memória, não precisa de acesso a mensagens nem nada além de responder). Copie a URL gerada, abra no navegador, e escolha o servidor onde quer testar.
-5. `docker compose up` (mesmo sem `DISCORD_GUILD_ID` preenchida ainda) — procure no log:
-   ```
-   Discord bot connected, /status command registered
-   Connected to 1 guild(s): Nome do Seu Servidor (123456789012345678)
-   ```
-   **Copie esse ID** (o número entre parênteses) direto do log — é o jeito mais fácil, sem precisar mexer nas configurações do Discord.
-6. Cole esse ID em `DISCORD_GUILD_ID` no `.env`, e rode `docker compose up` de novo (`.env` não recarrega sozinho como o código faz). Agora o `/status` é registrado só no seu servidor e aparece em segundos.
-
-**Sem `DISCORD_GUILD_ID`, o comando ainda funciona**, só demora a aparecer no autocomplete do Discord (até ~1h, é o tempo normal de propagação de um comando global) — não é um erro. Se `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` faltarem ou forem inválidos, o Monitora loga isso claramente e continua rodando sem o bot — também não é um erro fatal.
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and create a **New Application**.
+2. Under **Bot**, reset the token and put it in `DISCORD_TOKEN`. Treat it like a password.
+3. Under **General Information**, copy the **Application ID** into `DISCORD_CLIENT_ID`.
+4. Under **OAuth2 → URL Generator**, select the `bot` and `applications.commands` scopes (no extra bot permissions are needed), open the generated URL and add the bot to your server.
+5. Start Monitora once. The log lists the connected servers with their IDs. Copy yours into `DISCORD_GUILD_ID`, then restart so the command registers instantly.
 
 ### `config/targets.json`
-
-Define **o que** deve ser monitorado e **como**. Adicionar ou remover um serviço não exige nenhuma alteração de código — só editar este arquivo.
-
-`config/targets.json` é a sua configuração real e **não é versionada** (está no `.gitignore`). O que o repositório traz é `config/targets.example.json` — copie-o pra criar o seu:
-
-```bash
-cp config/targets.example.json config/targets.json
-```
-
-Esse example já demonstra os três tipos de target suportados (`http`, `log`, `host`), todos desativados por padrão — é só um modelo pra copiar e adaptar. Um trecho dele:
 
 ```json
 {
@@ -130,7 +236,7 @@ Esse example já demonstra os três tipos de target suportados (`http`, `log`, `
       "id": "example-website",
       "name": "Example Website",
       "type": "http",
-      "enabled": false,
+      "enabled": true,
       "url": "https://example.com",
       "discordWebhookEnv": "DISCORD_WEBHOOK_MAIN"
     }
@@ -138,51 +244,40 @@ Esse example já demonstra os três tipos de target suportados (`http`, `log`, `
 }
 ```
 
-- **`defaults`**: valores usados por qualquer target que não sobrescrever o campo individualmente.
-- **`targets`**: lista de serviços monitorados. `"type": "http"`, `"type": "log"` e `"type": "host"` funcionam de verdade.
+`defaults` apply to every target that does not override a value. `config/targets.example.json` shows all three target types.
 
-Veja [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) para o fluxo completo de configuração (local vs. pública) e a regra de manutenção desse arquivo de exemplo.
+Fields common to every target:
 
-> **`config/targets.json` é local, não versionado.** Ele está no `.gitignore` — suas edições nunca vão pro Git, mesmo em commits em massa (`git add -A`). O que é versionado é o `config/targets.example.json`, que você copia pra criar o seu. Veja [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) para o fluxo completo de configuração local vs. pública.
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | Unique identifier, used to track state. |
+| `name` | Yes | Human-readable name used in notifications and `/status`. |
+| `type` | Yes | `http`, `log` or `host`. |
+| `enabled` | Yes | Set to `false` to disable a target without removing it. |
+| `intervalSeconds` | No | Seconds between checks. |
+| `timeoutMs` | No | Check timeout in milliseconds. |
+| `failureThreshold` | No | Consecutive failures before a target becomes `DOWN` and alerts. Applies to `http` and `host` only. A `log` target notifies on the first match. |
+| `recoveryThreshold` | No | Consecutive successes before a `DOWN` target becomes `UP`. Applies to `http` and `host` only. |
+| `cooldownSeconds` | No | Minimum time between repeated alerts while a problem persists. For `log` targets, the minimum time between match notifications. |
+| `discordWebhookEnv` | Yes | Name of the environment variable that holds the webhook URL for this target. |
+| `discordChannelId` | No | Reserved. Not used by any code today. |
 
-> **Mudou o `config/targets.json` com o container já rodando?** Diferente do código em `src/`, esse arquivo é lido só uma vez, na inicialização — editá-lo não reinicia o monitor sozinho. Rode `docker compose restart monitor` (ou `docker compose down && docker compose up`) para a mudança valer.
+Fields for `"type": "http"`:
 
-Campos comuns a todo target:
+| Field | Required | Description |
+| --- | --- | --- |
+| `url` | One of `url` or `urlEnv` | Full URL to check. |
+| `urlEnv` | One of `url` or `urlEnv` | Name of an environment variable that holds the URL. Prefer this for internal or sensitive endpoints. |
+| `method` | No | HTTP method. Defaults to `GET`. |
 
-| Campo | Obrigatório | Descrição |
-|---|---|---|
-| `id` | Sim | Identificador único do target (usado internamente para rastrear estado). |
-| `name` | Sim | Nome legível, usado nas notificações e no `/status`. |
-| `type` | Sim | `"http"`, `"log"` ou `"host"`. |
-| `enabled` | Sim | `false` desativa o target sem precisar removê-lo do arquivo. |
-| `intervalSeconds` | Não (usa `defaults`) | Intervalo entre checks, em segundos. |
-| `timeoutMs` | Não (usa `defaults`) | Timeout do check, em milissegundos. |
-| `failureThreshold` | Não (usa `defaults`) | Quantas falhas/excedências consecutivas até o target virar `DOWN` e disparar um alerta. **Só se aplica a targets `http` e `host`** — um target `log` notifica no primeiro match, sempre. |
-| `recoveryThreshold` | Não (usa `defaults`) | Quantos sucessos consecutivos até um target `DOWN` virar `UP` novamente. **Só se aplica a targets `http` e `host`** — o conceito de "recuperação" não existe para `log` (um match de log é um evento pontual, não um estado contínuo). |
-| `cooldownSeconds` | Não (usa `defaults`) | Tempo mínimo entre alertas repetidos enquanto o problema persiste: para `http`/`host`, entre lembretes de um serviço/threshold que continua `DOWN` (a notificação de recuperação não espera esse cooldown); para `log`, entre notificações de novos matches de padrão. |
-| `discordChannelId` | Não | ID do canal do Discord. Não usado por nenhum código hoje — o `/status` responde no canal de onde foi chamado, e os alertas usam `discordWebhookEnv`, não este campo. Reservado para uma futura funcionalidade que ainda não existe. |
-| `discordWebhookEnv` | Sim | Nome da variável de ambiente (definida no `.env`) que contém a URL do webhook usado para notificar sobre esse target. |
+Fields for `"type": "log"`:
 
-Campos específicos de `"type": "http"`:
+| Field | Required | Description |
+| --- | --- | --- |
+| `path` | Yes | Path of the log file **inside the container**. |
+| `patterns` | Yes | List of plain substrings (not regular expressions). A new line containing any of them counts as a match. |
 
-| Campo | Obrigatório | Descrição |
-|---|---|---|
-| `url` | Sim, a menos que use `urlEnv` | URL completa a ser verificada. Não use isso para endpoints internos/sensíveis — prefira `urlEnv`. |
-| `urlEnv` | Sim, a menos que use `url` | Nome de uma variável de ambiente (no `.env`) que contém a URL — use para não commitar URLs internas. |
-| `method` | Não (padrão `"GET"`) | Método HTTP usado no check. |
-
-Um target `http` deve definir exatamente um de `url`/`urlEnv`, nunca os dois. Um sucesso é qualquer resposta HTTP 2xx ou 3xx dentro do timeout; 4xx, 5xx, timeout, falha de DNS, conexão recusada e falha de TLS contam como falha.
-
-Campos específicos de `"type": "log"`:
-
-| Campo | Obrigatório | Descrição |
-|---|---|---|
-| `path` | Sim | Caminho do arquivo de log **dentro do container** (veja a nota sobre volumes abaixo). |
-| `patterns` | Sim | Lista de substrings (não regex) que, se aparecerem em uma linha nova, contam como um match — ex.: `["ERROR", "FATAL"]`. |
-
-O Log Monitor lê o arquivo de forma incremental (nunca relê o arquivo inteiro), mantendo a posição de leitura entre checks, e lida com rotação, truncamento e recriação do arquivo automaticamente. **Na primeira vez que um target é verificado, o conteúdo já existente no arquivo não é processado** (como um `tail -f`) — só as linhas escritas depois disso contam. Um match dispara uma notificação imediatamente (o cooldown só entra em ação para não notificar repetidamente por matches muito próximos entre si); `failureThreshold`/`recoveryThreshold` não se aplicam a esse tipo.
-
-Como o arquivo de log normalmente vive no host (ou em outro container), monte-o como volume somente leitura no `docker-compose.yml`:
+The log monitor starts reading at the end of the file on the first check, like `tail -f`, so existing content is ignored. Because the file usually lives on the host, mount it read-only in `docker-compose.yml` and point `path` to the container path:
 
 ```yaml
 services:
@@ -190,83 +285,59 @@ services:
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-      - /caminho/no/host/app.log:/var/log/monitored/app.log:ro
+      - /path/on/host/app.log:/var/log/monitored/app.log:ro
 ```
 
-E aponte `path` para o caminho **dentro do container** (`/var/log/monitored/app.log` no exemplo acima), não para o caminho no host.
+Fields for `"type": "host"`:
 
-Campos específicos de `"type": "host"`:
+| Field | Required | Description |
+| --- | --- | --- |
+| `metricsUrl` | Yes | URL of a Node Exporter `/metrics` endpoint. The bundled service is reachable at `http://node-exporter:9100/metrics` from the `monitor` container. |
+| `diskMountpoint` | No | Filesystem mountpoint used for the disk threshold. Defaults to `/`. |
+| `cpuThresholdPercent`, `memoryThresholdPercent`, `diskThresholdPercent` | At least one when enabled | Usage percentage (0-100) above which the target is considered `DOWN`. |
 
-| Campo | Obrigatório | Descrição |
-|---|---|---|
-| `metricsUrl` | Sim | URL do endpoint `/metrics` de um [Node Exporter](https://github.com/prometheus/node_exporter). Este projeto já inclui um serviço `node-exporter` no `docker-compose.yml`, acessível em `http://node-exporter:9100/metrics` de dentro do container `monitor` (mesma rede do compose). |
-| `diskMountpoint` | Não (padrão `"/"`) | Qual sistema de arquivos monitorar para `diskThresholdPercent`, identificado pelo `mountpoint` reportado pelo Node Exporter. |
-| `cpuThresholdPercent`, `memoryThresholdPercent`, `diskThresholdPercent` | Pelo menos um é obrigatório quando `enabled: true` | Percentual (0–100) acima do qual o target é considerado `DOWN`. Um target `host` sem nenhum threshold definido nunca dispararia alerta, então a configuração é rejeitada. |
+CPU usage is computed from two consecutive readings of Node Exporter's cumulative counters, so it is only available from the second check of a new target onward.
 
-Diferente dos outros tipos, o Host Monitor **não lê `/proc`/`/sys` de dentro do próprio container** — isso mostraria métricas do container, não da máquina física. Em vez disso, ele consulta um Node Exporter (que tem acesso real ao host) via HTTP, no mesmo formato de texto usado pelo Prometheus. O uso de CPU é calculado comparando duas leituras sucessivas (é um contador cumulativo desde o boot, não um valor instantâneo) — por isso `cpuPercent` não aparece no primeiro check de um target recém-configurado, só a partir do segundo.
+> **Docker Desktop (Windows and macOS):** the "host" seen by Node Exporter is Docker Desktop's internal VM, not your physical machine, and the `/` mountpoint may not exist there. On a Linux host, `/` works as expected.
 
-> **Limitação em Docker Desktop (Windows/Mac):** o "host" que o Node Exporter enxerga é a VM interna do Docker Desktop, não a máquina física — então o mountpoint `/` padrão pode não existir na lista (a VM tem seus próprios mountpoints, como `/tmp`, `/var`, `/run`). Para ver quais mountpoints estão disponíveis no seu ambiente antes de configurar `diskMountpoint`, rode (com `docker compose up -d node-exporter` já executado):
-> ```bash
-> docker run --rm --network monitora_default curlimages/curl:latest -s http://node-exporter:9100/metrics | grep node_filesystem_size_bytes
-> ```
-> Em produção (um host Linux real), `/` funciona normalmente.
+## Development and validation
 
-Configuração inválida é rejeitada no início da execução, com uma mensagem de erro clara indicando o que está errado — o container não vai simplesmente travar silenciosamente.
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Runs with automatic restart on file changes (used by `docker compose up`). |
+| `npm run build` | Compiles TypeScript to `dist/`. |
+| `npm start` | Runs the compiled `dist/index.js` (used by the production image). |
+| `npm run typecheck` | Type checks without emitting files. |
+| `npm test` | Runs the test suite with `node:test`. |
 
-## Comandos
+The suite has 141 tests in 15 files covering configuration validation, the state machine, the alert policy, the scheduler, each monitor, the Discord notifier and the `/status` response. Network tests use short-lived local servers and the Discord tests use mocks, so nothing depends on real credentials. No coverage report or CI pipeline is set up yet.
 
-### Docker (uso do dia a dia)
+## Security
 
-| Comando | O que faz |
-|---|---|
-| `docker compose build` | Reconstrói a imagem — rode depois de mudar código ou o `Dockerfile`. |
-| `docker compose up` | Sobe o Monitora (+ Node Exporter) e mostra os logs no terminal. `Ctrl+C` para parar. |
-| `docker compose up -d` | Igual, mas em segundo plano (não prende o terminal). |
-| `docker compose logs monitor` | Mostra os logs do serviço principal (útil com `up -d`). Adicione `-f` para acompanhar em tempo real. |
-| `docker compose down` | Para e remove os containers e a rede. |
-| `docker compose ps` | Mostra quais containers estão rodando. |
-| `docker compose restart monitor` | Reinicia só o serviço principal — necessário depois de mudar o `.env` **ou** o `config/targets.json` (o código em `src/` recarrega sozinho em modo dev, mas variáveis de ambiente e o arquivo de configuração não — ele só é lido uma vez, na inicialização). |
+- Never commit `.env`, tokens, webhook URLs or sensitive internal URLs. `.env` and `config/targets.json` are git-ignored.
+- A Discord webhook URL is a credential, because it contains a token. Treat it like a password.
+- Error messages in logs and alerts describe the failure (for example "connection refused") and never include the full target URL or the webhook URL.
+- For `log` targets, the matching line (truncated to 500 characters) is sent to Discord. Monitora does not detect or redact secrets inside log lines, so choose patterns that avoid sensitive output or keep secrets out of the monitored logs.
 
-### npm (rodam tanto localmente, se você tiver Node.js 22, quanto via `docker compose run --rm monitor <script>`)
+## Current status and limitations
 
-| Comando | O que faz |
-|---|---|
-| `npm run dev` | Roda em modo desenvolvimento, com reinício automático ao editar arquivos (usado por `docker compose up`). |
-| `npm run build` | Compila o TypeScript para `dist/`. |
-| `npm start` | Roda a versão compilada (`dist/index.js`) — usado na imagem de produção. |
-| `npm run typecheck` | Verifica os tipos sem gerar arquivos. |
-| `npm test` | Roda a suíte de testes (testes de rede usam servidores locais efêmeros; testes do Discord usam mocks — nada depende de credenciais reais). |
+Monitora implements what was planned for its first version: configurable HTTP, log and host monitoring, the state machine, Discord alerts with cooldown, and the `/status` command. It is a working project, not a hardened product.
 
-## Segurança
+- **State is in memory.** Restarting the container clears monitoring history, log read offsets, the CPU baseline and what `/status` reports. There is no database.
+- **Configuration is read once.** Changes to `.env` or `config/targets.json` need a restart.
+- **Discord is the only notification channel.** The bot only has the `/status` command; there is no way to pause or resume a target from Discord.
+- **The host monitor needs a reachable Node Exporter.** Without it, each check fails with a clear error.
+- **No interface.** There is no web dashboard or API; status is available through logs, alerts and `/status`.
 
-- Nunca commite `.env`, tokens, URLs de webhook ou URLs internas sensíveis. `.env` já está no `.gitignore`.
-- A URL de um webhook do Discord **é** uma credencial (contém um token) — trate como uma senha.
-- Erros de conexão nunca incluem a URL completa do target nem a URL do webhook nas mensagens de log/alerta — apenas uma descrição da falha (ex.: "connection refused", "DNS resolution failed").
-- **Targets `log`**: quando um `pattern` bate, a linha correspondente (truncada a 500 caracteres) é incluída na notificação enviada ao Discord. Se a aplicação monitorada loga dados sensíveis (tokens, senhas, dados pessoais) em linhas que coincidem com os `patterns` configurados, esses dados vão parar no canal do Discord. O Monitora não tenta detectar ou redigir segredos dentro de linhas de log — trate isso na aplicação monitorada (não logar segredos em texto plano) ou escolha `patterns` que evitem capturar esse tipo de linha.
+No roadmap is committed beyond the current scope.
 
-## Estrutura do projeto
+## Documentation
 
-```text
-config/targets.json     configuração dos targets monitorados
-logs/                   logs de execução da própria aplicação (não os logs monitorados)
-src/
-  commands/              handler do comando /status (função pura, sem depender do discord.js)
-  config/                carregamento e validação de config/targets.json
-  discord/               bot (slash command) e notifier (webhook)
-  logs/                  Log Monitor (leitura incremental de arquivos de log monitorados)
-  monitoring/             scheduler, HTTP monitor, state store, alert policy, dispatch
-  system/                Host Monitor (métricas via Node Exporter)
-  types/                  tipos de domínio compartilhados
-  index.ts                ponto de entrada: liga tudo e trata shutdown
-tests/                   testes automatizados (node:test via tsx)
-docs/
-  ARCHITECTURE.md         arquitetura detalhada e regras arquiteturais
-  PROJECT_BLUEPRINT.md    especificação original do projeto
-  PROGRESS.md             histórico de desenvolvimento e decisões
-```
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): architecture and architectural rules
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md): local vs. public configuration and secrets
+- [`docs/PROGRESS.md`](docs/PROGRESS.md): development history and decisions
+- [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md): original specification
 
-## Limitações conhecidas (MVP)
+Most of the supporting documents are written in Portuguese.
 
-- **Estado em memória**: reiniciar o container perde o histórico de monitoramento (últimas falhas, downtime acumulado, offset de leitura de logs, baseline de CPU, etc.). Isso é intencional para o MVP — não há banco de dados. O `/status` também reflete esse estado em memória: reiniciar o container zera o que o comando mostra.
-- **Host Monitor** depende de um Node Exporter acessível — sem ele (ou com a URL errada), o target simplesmente falha a cada check com um erro claro, como qualquer outra falha de rede.
-- O Bot do Discord só tem o comando `/status` — não há outros comandos interativos (ex.: pausar/reativar um target via Discord).
+This repository does not currently include a license file.

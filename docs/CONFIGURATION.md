@@ -2,7 +2,7 @@
 
 Este documento explica como configurar sua própria instalação do Monitora, e a diferença entre arquivos **públicos** (versionados, servem de exemplo para qualquer pessoa) e arquivos **locais** (sua configuração real, nunca vão para o GitHub).
 
-Para a referência completa de cada campo de `config/targets.json` e de cada variável de `.env`, veja o [`README.md`](../README.md#configuração) — este documento foca no fluxo de configuração, não repete a referência de campos.
+Para a referência completa de cada campo de `config/targets.json` e de cada variável de `.env`, veja o [`README.md`](../README.md#configuration) — este documento foca no fluxo de configuração, não repete a referência de campos.
 
 ## Configuração local
 
